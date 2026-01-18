@@ -24,6 +24,7 @@ from typing import List, Dict, Any
 from alana_system.embeddings.embedder import TextEmbedder
 from alana_system.memory.vector_store import VectorStore
 from alana_system.memory.graph_store import GraphStore  # Adicionado
+from alana_system.inference.llm_engine import LLMEngine
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +35,36 @@ class QueryEngine:
         embedder: TextEmbedder,
         vector_store: VectorStore,
         graph_store: GraphStore,
+        llm_engine: LLMEngine,
         top_k: int = 5,
         score_threshold: float = 0.35, # Ajustado para maior precisão
     ):
         self.embedder = embedder
         self.vector_store = vector_store
         self.graph_store = graph_store
+        self.llm_engine = llm_engine
         self.top_k = top_k
         self.score_threshold = score_threshold
+
+    def answer_query(self, question: str) -> str:
+        """
+        Executa o pipeline completo de RAG:
+        1. Busca o contexto híbrido (vetorial + grafo).
+        2. Usa o LLM para gerar uma resposta a partir do contexto.
+        """
+        logger.info(f"Executando pipeline RAG completo para: '{question}'")
+        
+        # 1. Obter contexto
+        query_result = self.query(question)
+        context_text = query_result["context_text"]
+        
+        # 2. Gerar resposta
+        answer = self.llm_engine.generate_answer(
+            query=question,
+            context_text=context_text,
+        )
+        
+        return answer
 
     def query(self, question: str) -> Dict[str, Any]:
         """

@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import List, Optional
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Adiciona o diretório 'src' ao sys.path para encontrar o pacote 'alana_system'
 src_path = Path(__file__).resolve().parent / 'src'
@@ -74,7 +77,7 @@ class IngestionPipeline:
             logger.info("Novo TextEmbedder inicializado no Pipeline de Ingestão.")
             
         self.vector_store = VectorStore(
-            collection_name=collection_name, host="localhost", port=6333
+            collection_name=collection_name, path="alana_memoria_local"
         )
 
         # --- Memória de Grafo (Knowledge Graph) ---
@@ -164,7 +167,7 @@ class IngestionPipeline:
     def _process_document_pages(self, raw_pages: List[PageText], doc_name: str, source: str) -> None:
         """
         Lógica unificada para processar páginas.
-        Agora com processamento paralelo para a extração de grafos (Entity Extractor).
+        Processamento sequencial de lotes para evitar o erro 429 (Too Many Requests).
         """
         if not raw_pages:
             logger.warning(f"Documento {doc_name} ({source}) não contém páginas para processar.")
@@ -180,29 +183,22 @@ class IngestionPipeline:
             logger.warning(f"Nenhum chunk gerado para o documento {doc_name}.")
             return
 
-        # --- Etapa 2: Extração Paralela de Grafo de Conhecimento ---
-        logger.info(f"Iniciando extração PARALELA de entidades para {len(chunks)} chunks...")
+        # --- Etapa 2: Extração de Grafo de Conhecimento em Lotes ---
+        logger.info(f"Iniciando extração de entidades em lotes para {len(chunks)} chunks...")
         
-        # max_workers define quantos chunks o LLM tentará processar ao mesmo tempo.
-        # Se você tem uma GPU potente, 2 ou 3 é um bom número inicial.
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            # Criamos as tarefas para cada chunk
-            futures = [
-                executor.submit(
-                    self._process_entities,
-                    chunk.text,
-                    chunk.source_name,
-                    chunk.page_number
-                )
-                for chunk in chunks
-            ]
-
-            # Monitoramos o progresso e capturamos possíveis erros
-            for future in as_completed(futures):
-                try:
-                    future.result() # Isso garante que exceções nas threads apareçam no log
-                except Exception as exc:
-                    logger.error(f"Erro na extração paralela de um chunk em {doc_name}: {exc}")
+        # BATCHING: Agrupamos 3 chunks para economizar chamadas
+        batch_size = 3
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            combined_text = "\n\n".join([c.text for c in batch])
+            
+            logger.info(f"Processando lote {i//batch_size + 1} de {len(chunks)//batch_size + (1 if len(chunks)%batch_size != 0 else 0)} para {doc_name}...")
+            
+            # Chamada direta (sem threads paralelas para evitar o 429)
+            self._process_entities(combined_text, doc_name, batch[0].page_number)
+            
+            # Pausa obrigatória de 5 segundos (Cota Free do Gemini)
+            time.sleep(5)
 
         # --- Etapa 3: Indexação Vetorial (RAG) ---
         logger.info(f"Iniciando indexação vetorial para {len(chunks)} chunks...")
@@ -218,6 +214,8 @@ class IngestionPipeline:
         if not text.strip():
             return
 
+        import time
+        time.sleep(4)
         # 1. Extração semântica via LLM
         # Aqui o LLM trabalha pesado
         graph = self.entity_extractor.extract_graph(text)
