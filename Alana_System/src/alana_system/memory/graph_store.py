@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from alana_system.preprocessing.entity_extractor import KnowledgeGraph
+from alana_system.preprocessing.entity_extractor import KnowledgeGraphSchema
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,16 @@ class GraphStore:
                     UNIQUE(subject, relation, object, source_doc)
                 )
             """)
+            
+            # Nova tabela para resolver sinônimos (ex: "EUA" -> "Estados Unidos")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS entity_aliases (
+                    alias TEXT PRIMARY KEY,
+                    canonical_name TEXT NOT NULL,
+                    FOREIGN KEY(canonical_name) REFERENCES entities(name)
+                )
+            """)
+            
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object)")
@@ -53,50 +63,76 @@ class GraphStore:
     # -------------------------------------------------
 
     def _normalize_name(self, name: str) -> str:
-        """Normalização agressiva para deduplicação lexical."""
-        return re.sub(r"[^a-zA-Z0-9]", "", name).lower()
+        """Normalização mais conservadora para preservar legibilidade."""
+        return name.strip().title()
+
+    def _resolve_canonical_name(self, cursor, name: str) -> str:
+        """Busca o nome canônico através de aliases ou normalização."""
+        normalized = self._normalize_name(name)
+        
+        # 1. Tenta buscar na tabela de aliases
+        cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ?", (normalized,))
+        row = cursor.fetchone()
+        if row:
+            return row["canonical_name"]
+            
+        # 2. Tenta buscar se o nome já existe na tabela de entidades (case-sensitive)
+        cursor.execute("SELECT name FROM entities WHERE name = ?", (normalized,))
+        row = cursor.fetchone()
+        if row:
+            return row["name"]
+        
+        # 3. Tenta uma busca mais flexível (case-insensitive e sem espaços)
+        no_space_normalized = normalized.replace(" ", "")
+        cursor.execute(
+            "SELECT name FROM entities WHERE REPLACE(name, ' ', '') = ? COLLATE NOCASE", 
+            (no_space_normalized,)
+        )
+        row = cursor.fetchone()
+        if row:
+            # Encontrou! Adiciona um alias para acelerar buscas futuras.
+            canonical_name = row["name"]
+            cursor.execute(
+                "INSERT OR IGNORE INTO entity_aliases (alias, canonical_name) VALUES (?, ?)",
+                (normalized, canonical_name)
+            )
+            return canonical_name
+            
+        return normalized
 
     def add_knowledge(
         self,
-        graph: KnowledgeGraph,
+        graph: KnowledgeGraphSchema,
         source_doc: str,
         page_number: int
     ) -> None:
-        """Persiste entidades e relações com deduplicação otimizada em memória."""
+        """Persiste entidades e relações com deduplicação otimizada."""
         if not graph or (not graph.entities and not graph.relations):
             return
 
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-
-                # 1. Cache de entidades existentes para evitar múltiplas queries
-                cursor.execute("SELECT name FROM entities")
-                existing_map = {self._normalize_name(row["name"]): row["name"] for row in cursor.fetchall()}
                 resolved_map: Dict[str, str] = {}
 
-                # 2. Processar Entidades
+                # 1. Processar Entidades
                 for entity in graph.entities:
-                    norm_name = self._normalize_name(entity.name)
-                    if norm_name in existing_map:
-                        resolved_map[entity.name] = existing_map[norm_name]
-                    else:
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)",
-                            (entity.name, entity.type)
-                        )
-                        existing_map[norm_name] = entity.name
-                        resolved_map[entity.name] = entity.name
+                    canonical = self._resolve_canonical_name(cursor, entity.name)
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)",
+                        (canonical, entity.type)
+                    )
+                    resolved_map[entity.name] = canonical
 
-                # 3. Processar Relações com nomes resolvidos
+                # 2. Processar Relações com nomes resolvidos
                 for rel in graph.relations:
-                    subj = resolved_map.get(rel.subject, rel.subject)
-                    obj = resolved_map.get(rel.object, rel.object)
+                    subj = resolved_map.get(rel.subject, self._resolve_canonical_name(cursor, rel.subject))
+                    obj = resolved_map.get(rel.object, self._resolve_canonical_name(cursor, rel.object))
                     cursor.execute(
                         """INSERT OR IGNORE INTO relations 
                            (subject, relation, object, source_doc, page_number)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (subj, rel.relation, obj, source_doc, page_number)
+                        (subj, rel.predicate, obj, source_doc, page_number)
                     )
                 conn.commit()
                 logger.debug(f"Grafo persistido | doc={source_doc} page={page_number}")

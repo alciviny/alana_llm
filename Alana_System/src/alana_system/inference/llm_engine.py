@@ -1,5 +1,6 @@
 import logging
 import threading
+from typing import Optional
 from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
