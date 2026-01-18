@@ -1,120 +1,129 @@
 import logging
-import threading
-from typing import Optional
-from llama_cpp import Llama
+from typing import Optional, List, Dict, Any
+
+from litellm import completion
 
 logger = logging.getLogger(__name__)
 
 
 class LLMEngine:
     """
-    Engine de LLM local usando llama.cpp
+    Engine de LLM Híbrida e Ultrarrápida.
 
-    Responsabilidades:
-    - Carregar modelo local (CPU ou GPU)
-    - Aplicar prompt seguro e determinístico
-    - Gerar respostas baseadas EXCLUSIVAMENTE no contexto
+    Primário: Gemini 1.5 Flash (rápido e barato)
+    Fallback: Grok (reserva automática)
+
+    Suporta:
+    - Prompt clássico (query + contexto)
+    - Chat-style (messages)
+    - Fallback automático
+    - Controle simples por metadata
     """
 
     def __init__(
         self,
-        model_path: str,
-        context_window: int = 4096,
-        n_gpu_layers: Optional[int] = None,
-        seed: int = 42,
+        model_path: Optional[str] = None,  # Mantido por compatibilidade futura
+        context_window: int = 8192,
+        model_priority: Optional[List[str]] = None,
     ):
-        """
-        Args:
-            model_path: Caminho do arquivo .gguf
-            context_window: Janela total de contexto (prompt + resposta)
-            n_gpu_layers:
-                - None  -> auto detecta
-                - 0     -> CPU
-                - -1    -> tenta usar tudo da GPU
-            seed: Seed fixa para respostas determinísticas
-        """
+        self.context_window = context_window
+        self.model_priority = model_priority or ["gemini/gemini-2.5-flash"]
 
-        if n_gpu_layers is None:
-            # Fallback para uso máximo da GPU
-            n_gpu_layers = -1
-
-        logger.info("🔄 Inicializando LLM local")
-        logger.info(f"📦 Modelo: {model_path}")
-        logger.info(f"🧠 Context Window: {context_window}")
-        logger.info(f"🎮 GPU Layers: {n_gpu_layers}")
-
-        self.llm = Llama(
-            model_path=model_path,
-            n_ctx=context_window,
-            n_gpu_layers=n_gpu_layers,
-            seed=seed,
-            verbose=False,
-        )
-        self._lock = threading.Lock()
-
-    def _build_prompt(self, query: str, context_text: str, metadata: dict = None) -> str:
-        """Constrói o prompt final para o LLM."""
-        prompt = (
-            "Você é um assistente de IA chamado Alana. "
-            "Sua tarefa é responder à pergunta do usuário de forma concisa e direta, "
-            "baseando-se exclusivamente no contexto fornecido.\n\n"
-            "## CONTEXTO\n"
-            f"{context_text}\n\n"
-            "## PERGUNTA\n"
-            f"{query}\n\n"
+        logger.info(
+            f"🚀 LLMEngine inicializada | Context window: {context_window} | "
+            f"Prioridade de modelos: {self.model_priority}"
         )
 
-        if metadata:
-            confidence_hint = metadata.get("confidence_hint")
-            num_vector_chunks = metadata.get("num_vector_chunks", 0)
-            num_graph_facts = metadata.get("num_graph_facts", 0)
+    # =========================
+    # Utilitários internos
+    # =========================
 
-            if confidence_hint:
-                prompt += f"## INSTRUÇÃO ADICIONAL\n- {confidence_hint}\n"
-                if num_vector_chunks == 0 and num_graph_facts == 0:
-                    prompt += "- Aja com cautela extra, pois nenhuma evidência foi encontrada.\n"
-                elif num_vector_chunks < 2 and num_graph_facts < 2:
-                    prompt += "- A evidência é limitada, evite fazer suposições.\n"
+    def _truncate_context(self, text: Optional[str]) -> str:
+        """
+        Garante que o contexto não ultrapasse o limite definido.
+        """
+        if not text:
+            return ""
+        return text[: self.context_window]
 
-        prompt += "## RESPOSTA\n"
+    def _build_prompt(
+        self,
+        query: str,
+        context_text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Constrói um prompt controlado, simples e previsível.
+        """
+        metadata = metadata or {}
+
+        role = metadata.get("role", "assistente de IA")
+        style = metadata.get("style", "direta e concisa")
+
+        context_text = self._truncate_context(context_text)
+
+        prompt = f"""
+Você é Alana, uma {role}.
+Responda de forma {style}, utilizando exclusivamente o contexto fornecido.
+Se a resposta não estiver no contexto, diga explicitamente que não encontrou a informação.
+
+## CONTEXTO
+{context_text}
+
+## PERGUNTA
+{query}
+
+## RESPOSTA
+""".strip()
+
         return prompt
+
+    # =========================
+    # API pública
+    # =========================
 
     def generate_answer(
         self,
-        query: str = None,
-        context_text: str = None,
-        messages: list = None,
-        metadata: dict = None,
-        max_tokens: int = 512,
-        temperature: float = 0.1
+        query: Optional[str] = None,
+        context_text: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        temperature: float = 0.1,
     ) -> str:
+        """
+        Gera resposta utilizando o modelo primário com fallback automático.
+        """
+
+        # Se não vier mensagens prontas, constrói o prompt padrão
+        if not messages:
+            if not query:
+                raise ValueError("query é obrigatória quando messages não é fornecido.")
+
+            prompt = self._build_prompt(query, context_text or "", metadata)
+            messages = [{"role": "user", "content": prompt}]
+
         try:
-            with self._lock:
-                # Se recebermos uma lista de mensagens (usado pelo EntityExtractor)
-                if messages:
-                    output = self.llm.create_chat_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
-                # Modo de busca RAG
-                else:
-                    prompt = self._build_prompt(query, context_text, metadata)
-                    output = self.llm.create_chat_completion(
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
+            response = completion(
+                model=self.model_priority[0],
+                messages=messages,
+                fallbacks=self.model_priority[1:],
+                temperature=temperature,
+            )
 
-            return output["choices"][0]["message"]["content"].strip()
+            answer = response.choices[0].message.content.strip()
 
-        except RuntimeError as e:
-            if "llama_decode returned -1" in str(e):
-                logger.error("⚠️ Erro de Contexto: O bloco de texto é muito complexo ou longo para o LLM. Pulando...")
-            else:
-                logger.error(f"❌ Erro de Runtime no LLM: {e}")
-            return ""
+            # Loga o modelo real usado (primário ou fallback)
+            used_model = getattr(response, "model", "unknown")
+            logger.info(f"✅ Resposta gerada com sucesso | Modelo usado: {used_model}")
+
+            return answer
 
         except Exception as e:
-            logger.error(f"❌ Erro inesperado no LLM Engine: {e}")
-            return ""
+            logger.error(
+                "❌ Falha crítica em todos os modelos de IA",
+                exc_info=True,
+            )
+            return (
+                "Não consegui processar a resposta devido a um erro técnico "
+                "nas APIs externas."
+            )

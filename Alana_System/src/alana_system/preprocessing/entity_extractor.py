@@ -8,11 +8,15 @@ from ..inference.llm_engine import LLMEngine
 logger = logging.getLogger(__name__)
 
 # Modelos de Esquema (Contratos)
-EntityType = Literal["Pessoa", "Lugar", "Projeto", "Conceito", "Data", "Organização"]
+EntityType = Literal[
+    "Pessoa", "Lugar", "Projeto", "Conceito", 
+    "Data", "Organização", "Tecnologia", "Ferramenta"
+]
 
 class EntitySchema(BaseModel):
     name: str = Field(..., min_length=1)
     type: EntityType
+    description: str = Field(default="")
 
 class RelationSchema(BaseModel):
     subject: str
@@ -58,38 +62,33 @@ class EntityExtractor:
     # =========================
 
     def _build_prompt(self) -> str:
+        # Prompt mais rigoroso para o Gemini 2.5
         return """
-Você é um sistema sênior de extração de conhecimento para GraphRAG.
+Você é um sistema sênior de extração de conhecimento.
+Tarefa: Extraia um JSON de Grafo de Conhecimento do texto fornecido.
 
-Tarefa: Extraia um GRAFO DE CONHECIMENTO do texto.
+Categorias Permitidas:
+- Tecnologia: Linguagens (Python, SQL), Frameworks.
+- Ferramenta: Docker, VS Code, APIs.
+- Conceito: Teoria, POO, Regimes de Mercado.
+- Outros: Pessoa, Lugar, Projeto, Data, Organização.
 
-Regras Cruciais de Normalização:
-1. Nomes Técnicos: Use o nome padrão da indústria (ex: use "PostgreSQL" em vez de "Postgres" ou "Bancodedados SQL").
-2. Versões: Mantenha a versão se for vital, mas padronize o formato (ex: "Llama 3", não "Llama3").
-3. Siglas: Prefira o nome por extenso se disponível, ou a sigla mais comum (ex: "Inteligência Artificial").
-4. Entidades Únicas: Se o texto cita "Vinícius" e depois "ele", a entidade é "Vinícius".
-
-Formato da Resposta (APENAS JSON):
+RESPOSTA OBRIGATORIAMENTE EM JSON PURO:
 {
-  "entities": [{"name": "string", "type": "Pessoa|Lugar|Projeto|Conceito|Data|Organização"}],
+  "entities": [{"name": "string", "type": "Tipo", "description": "string"}],
   "relations": [{"subject": "string", "predicate": "string", "object": "string"}]
 }
 """
 
     def _safe_json_load(self, raw_text: str) -> Dict[str, Any]:
-        """
-        Extrai e valida JSON de forma segura a partir da resposta do LLM.
-        """
         try:
-            # Encontra o início e o fim do objeto JSON na resposta
+            # Tenta encontrar o bloco JSON mesmo que a IA mande texto extra
             start = raw_text.find("{")
             end = raw_text.rfind("}") + 1
-            if start == -1 or end == 0:
-                raise ValueError("Nenhum objeto JSON encontrado no texto.")
+            if start == -1:
+                # Se não houver JSON, retorna um dicionário vazio em vez de erro
+                return {"entities": [], "relations": []}
             
-            json_str = raw_text[start:end]
-            return json.loads(json_str)
-        except ValueError as e:
-            logger.error("Erro ao decodificar JSON do LLM")
-            logger.debug("Texto recebido:\n%s", raw_text)
-            raise ValueError("JSON inválido retornado pelo LLM") from e
+            return json.loads(raw_text[start:end])
+        except Exception:
+            return {"entities": [], "relations": []}

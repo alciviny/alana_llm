@@ -1,192 +1,136 @@
-"""
-bridge.py
-
-Este script atua como uma ponte (Sidecar) entre o Go e os modelos de IA Python.
-Ele expõe endpoints FastAPI para embedding, geração de texto e ingestão de documentos,
-mantendo os modelos pré-carregados em memória para respostas de baixa latência.
-
-Arquitetura: Senior Pattern (Sidecar / Hot-Start)
-"""
-
+import os
 import sys
-from pathlib import Path
 import logging
-
-# Adiciona o diretório 'src' ao sys.path para encontrar o pacote 'alana_system'
-src_path = Path(__file__).resolve().parent / 'src'
-sys.path.insert(0, str(src_path))
-# Adiciona o diretório raiz para encontrar o run_ingestion
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
-from sentence_transformers import CrossEncoder
+from dotenv import load_dotenv
+from typing import Optional
 
-try:
-    from alana_system.embeddings.embedder import TextEmbedder
-    from alana_system.inference.llm_engine import LLMEngine
-    from run_ingestion import IngestionPipeline # Importa o pipeline de ingestão
-except ImportError as e:
-    logging.error(f"Erro ao importar módulos do Alana System: {e}")
-    logging.error("Verifique se o 'src_path' está correto e se o ambiente virtual está ativo.")
-    sys.exit(1)
+# =========================
+# Infra
+# =========================
 
+load_dotenv()
 
-# =========================================================
-# LOGGING
-# =========================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] (Python Sidecar) %(message)s"
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AlanaBridge")
 
-
-# =========================================================
-# CONFIGURAÇÕES E INICIALIZAÇÃO DOS MODELOS (WARM START)
-# =========================================================
-logger.info("Iniciando o Python Sidecar para o Alana System...")
-
-# --- Configurações ---
-MODEL_PATH = "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
-EMBEDDER_DEVICE = "cuda"
-RERANKER_DEVICE = "cuda"
-LLM_GPU_LAYERS = -1
-INGESTION_COLLECTION_NAME = "alana_knowledge_base"
-
-# --- Carregamento dos Modelos ---
-try:
-    logger.info("Carregando modelo de embedding...")
-    embedder = TextEmbedder(device=EMBEDDER_DEVICE)
-    logger.info("✅ Modelo de embedding carregado.")
-except Exception as e:
-    logger.exception("❌ Falha crítica ao carregar o TextEmbedder.")
-    sys.exit(1)
-
-try:
-    logger.info("Carregando modelo de Re-ranking (Cross-Encoder)...")
-    reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=RERANKER_DEVICE)
-    logger.info("✅ Modelo de Re-ranking carregado.")
-except Exception as e:
-    logger.exception("❌ Falha crítica ao carregar o CrossEncoder (Re-ranker).")
-    sys.exit(1)
-
-try:
-    logger.info("Carregando modelo LLM...")
-    llm = LLMEngine(model_path=MODEL_PATH, n_gpu_layers=LLM_GPU_LAYERS)
-    logger.info("✅ Modelo LLM carregado.")
-except Exception as e:
-    logger.exception(f"❌ Falha crítica ao carregar o LLMEngine. Verifique o caminho: {MODEL_PATH}")
-    sys.exit(1)
-
-# Inicialização do Pipeline de Ingestão (Singleton)
-# Usamos o LLM já carregado para extração
-pipeline = IngestionPipeline(
-    raw_dir="data/raw",
-    collection_name="alana_knowledge_base",
-    embedder=embedder, # Reutiliza o embedder
-    llm=llm            # Reutiliza o LLM
-)
-
-
-# =========================================================
-# API SERVER (FastAPI)
-# =========================================================
 app = FastAPI(
-    title="Alana System - Python Sidecar",
-    description="Servidor para realizar embedding, re-ranking, geração de texto e ingestão de documentos.",
-    version="1.2.0"
+    title="Alana AI Bridge",
+    version="2.1.0",
+    description="Bridge de inferência da Alana com Gemini Flash + RAG"
 )
 
-# --- Definição dos Schemas (Contratos da API) ---
-class EmbedRequest(BaseModel):
-    text: str
+# =========================
+# Core Alana (Singleton-like)
+# =========================
 
-class EmbedResponse(BaseModel):
-    vector: list[float]
+from src.alana_system.inference.llm_engine import LLMEngine
+from src.alana_system.query.query_engine import QueryEngine
+from src.alana_system.memory.vector_store import VectorStore
+from src.alana_system.memory.graph_store import GraphStore
+from src.alana_system.embeddings.embedder import TextEmbedder
 
-class RerankRequest(BaseModel):
+llm_engine = LLMEngine(
+    model_priority=["gemini/gemini-1.5-flash"]
+)
+
+embedder = TextEmbedder()
+vector_store = VectorStore(collection_name="alana_knowledge_base", path="alana_memoria_local")
+graph_store = GraphStore()
+query_engine = QueryEngine(
+    vector_store=vector_store,
+    embedder=embedder,
+    graph_store=graph_store,
+    llm_engine=llm_engine,
+)
+
+# =========================
+# Schemas
+# =========================
+
+class QueryRequest(BaseModel):
     query: str
-    documents: List[str]
+    context_override: Optional[str] = None
+    stream: bool = False
 
-class RerankResponse(BaseModel):
-    scores: List[float]
+# =========================
+# Lifecycle
+# =========================
 
-class GenerateRequest(BaseModel):
-    query: str
-    context: str
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🚀 Alana Bridge Online")
+    logger.info("🧠 Engine ativo: Gemini 1.5 Flash")
+    logger.info("📦 RAG + Vector Store inicializados")
 
-class GenerateResponse(BaseModel):
-    answer: str
-
-class ProcessRequest(BaseModel):
-    path: str
-    type: str
-
-@app.post("/process_document")
-async def process_document(req: ProcessRequest):
-    """
-    Recebe ordens do orquestrador Go para processar arquivos.
-    """
-    path = Path(req.path)
-    logger.info(f"Recebido pedido de processamento: {path.name} ({req.type})")
-
-    try:
-        if req.type == "PDF":
-            pages = pipeline.pdf_extractor.extract(path)
-            pipeline._process_document_pages(pages, path.name, source="pdf")
-        elif req.type == "Audio":
-            pages = pipeline.audio_transcriber.transcribe(path)
-            pipeline._process_document_pages(pages, path.name, source="audio")
-        elif req.type == "Note":
-            pages = pipeline.note_extractor.extract(path)
-            pipeline._process_document_pages(pages, path.name, source="note")
-        
-        return {"status": "success", "file": path.name}
-    except Exception as e:
-        logger.error(f"Erro ao processar {path.name}: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@app.post("/embed", response_model=EmbedResponse)
-async def get_embedding(req: EmbedRequest):
-    """Gera o embedding vetorial para um texto."""
-    logger.info(f"Recebido pedido de embedding para texto: '{req.text[:50]}...'")
-    vector = embedder.embed_query(req.text)
-    return {"vector": vector.tolist()}
-
-@app.post("/rerank", response_model=RerankResponse)
-async def rerank_documents(req: RerankRequest):
-    """
-    Re-ranqueia uma lista de documentos com base na relevância para a query,
-    usando um modelo Cross-Encoder.
-    """
-    logger.info(f"Recebido pedido de re-ranking para query: '{req.query[:50]}...'")
-    pairs = [[req.query, doc] for doc in req.documents]
-    scores = reranker.predict(pairs)
-    logger.info(f"Re-ranking concluído para {len(req.documents)} documentos.")
-    return {"scores": scores.tolist()}
-
-@app.post("/generate", response_model=GenerateResponse)
-async def generate_answer(req: GenerateRequest):
-    """Gera uma resposta com base em uma query e um contexto."""
-    logger.info(f"Recebido pedido de geração para query: '{req.query[:50]}...'")
-    answer = llm.generate_answer(messages=[
-        {"role": "system", "content": req.context},
-        {"role": "user", "content": req.query}
-    ])
-    return {"answer": answer}
+# =========================
+# Endpoints
+# =========================
 
 @app.get("/health")
 async def health_check():
-    """Verifica se o servidor e os modelos estão operacionais."""
-    return {"status": "ok", "message": "Alana Sidecar está operacional."}
+    return {
+        "status": "ready",
+        "engine": "Alana LLMEngine",
+        "models": llm_engine.model_priority,
+    }
 
+@app.post("/generate")
+async def generate(request: QueryRequest):
+    """
+    Endpoint principal de geração.
+    - Usa RAG por padrão
+    - Permite override manual de contexto
+    """
 
-logger.info("🚀 Servidor FastAPI pronto para receber requisições em http://localhost:8000")
+    if request.stream:
+        raise HTTPException(
+            status_code=400,
+            detail="Streaming ainda não suportado neste endpoint."
+        )
+
+    try:
+        logger.info(f"📨 Pergunta recebida: {request.query}")
+
+        # Caminho 1 — contexto manual (bypass RAG)
+        if request.context_override:
+            logger.info("⚠️ Usando context_override (bypass RAG)")
+
+            answer = llm_engine.generate_answer(
+                query=request.query,
+                context_text=request.context_override,
+            )
+
+        # Caminho 2 — RAG normal
+        else:
+            logger.info("🔎 Usando QueryEngine (RAG ativo)")
+            answer = query_engine.answer_query(request.query)
+
+        return {
+            "query": request.query,
+            "answer": answer,
+            "status": "success",
+        }
+
+    except Exception as e:
+        logger.error("❌ Erro no processamento", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Erro interno ao processar a requisição."
+        )
+
+# =========================
+# Entry point
+# =========================
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+    )
