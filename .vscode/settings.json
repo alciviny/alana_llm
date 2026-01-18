@@ -3,5 +3,8 @@
         "Alana_System"
     ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "python.analysis.extraPaths": [
+        "./Alana_System/src"
+    ]
 }

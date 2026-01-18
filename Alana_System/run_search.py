@@ -1,17 +1,17 @@
 import sys
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 # =========================================================
 # PATH SETUP
 # =========================================================
-# Adiciona o diretório 'src' ao sys.path para encontrar o pacote 'alana_system'
-src_path = Path(__file__).resolve().parent / 'src'
-sys.path.insert(0, str(src_path))
+SRC_PATH = Path(__file__).resolve().parent / "src"
+sys.path.insert(0, str(SRC_PATH))
 
 from alana_system.embeddings.embedder import TextEmbedder
 from alana_system.memory.vector_store import VectorStore
+from alana_system.memory.graph_store import GraphStore
 from alana_system.query.query_engine import QueryEngine
 from alana_system.inference.llm_engine import LLMEngine
 
@@ -20,218 +20,176 @@ from alana_system.inference.llm_engine import LLMEngine
 # =========================================================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s :: %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("alana.main")
+
 
 # =========================================================
-# TOKEN CONTROL (CORRIGIDO E ROBUSTO)
+# CONFIGURAÇÕES GERAIS
 # =========================================================
-def estimate_tokens(text: str) -> int:
+MODEL_PATH = "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+N_CTX = 4096
+
+VECTOR_COLLECTION = "alana_knowledge_base"
+VECTOR_PATH = "./qdrant_data"
+GRAPH_DB_PATH = "data/memory/alana_graph.db"
+
+
+def adaptive_score_threshold(question: str) -> float:
     """
-    Estimativa mais segura para Llama 3 / Português.
-    Multiplicador 1.7 cobre a maioria dos casos onde 1 palavra > 1 token.
+    Ajusta o score threshold dinamicamente com base
+    na complexidade da pergunta.
     """
-    if not text:
-        return 0
-    # Aumentamos o peso de cada palavra para evitar estouros
-    return int(len(text.split()) * 1.7)
+    length = len(question.split())
+
+    if length <= 5:
+        return 0.45
+    elif length <= 15:
+        return 0.35
+    else:
+        return 0.25
 
 
-def truncate_context_by_budget(
-    contexts: List[Dict[str, Any]], 
-    max_tokens: int
-) -> str:
+def should_fallback(result: Dict[str, Any]) -> bool:
     """
-    Junta os contextos. Se um bloco for maior que o espaço restante,
-    ele é CORTADO para caber, em vez de estourar o erro.
+    Decide se o sistema deve evitar geração por falta
+    de evidência suficiente.
     """
-    selected_blocks = []
-    used_tokens = 0
+    vector_hits = len(result.get("vector_results", []))
+    graph_facts = len(result.get("graph_facts", []))
 
-    for item in contexts:
-        text = item.get("text", "")
-        page = item.get("page_number", "?")
-        
-        # Cabeçalho ocupa tokens também
-        header = f"--- [Fonte/Pág {page}] ---\n"
-        header_tokens = estimate_tokens(header)
-        
-        # Quanto sobra para o texto neste momento?
-        remaining_tokens = max_tokens - used_tokens - header_tokens
-        
-        if remaining_tokens <= 0:
-            logger.info("🛑 Orçamento esgotado. Parando aqui.")
-            break
+    return vector_hits == 0 and graph_facts == 0
 
-        # Calcula tokens do texto completo
-        text_tokens = estimate_tokens(text)
-        
-        if text_tokens > remaining_tokens:
-            # --- CORTE INTELIGENTE ---
-            # Se o texto é maior que o espaço, cortamos ele proporcionalmente
-            logger.warning(f"⚠️ Cortando trecho gigante (Pág {page}) para caber no contexto.")
-            
-            # Regra de 3 inversa aproximada: se X palavras = Y tokens, quantas palavras cabem em remaining?
-            # Usamos 1.7 como fator.
-            safe_word_count = int(remaining_tokens / 1.7)
-            words = text.split()
-            
-            # Reconstrói o texto cortado
-            truncated_text = " ".join(words[:safe_word_count]) + "... [CORTADO PELO SISTEMA]"
-            
-            formatted_block = header + truncated_text
-            selected_blocks.append(formatted_block)
-            
-            # O orçamento encheu, então paramos
-            used_tokens += header_tokens + estimate_tokens(truncated_text)
-            break
-        else:
-            # Cabe inteiro
-            formatted_block = header + text
-            selected_blocks.append(formatted_block)
-            used_tokens += header_tokens + text_tokens
 
-    logger.info(
-        f"🧮 Contexto final montado: ~{used_tokens}/{max_tokens} tokens (estimado) "
-        f"({len(selected_blocks)} blocos usados)"
-    )
+def _print_banner():
+    """Imprime o banner de inicialização do sistema."""
+    print("\n" + "=" * 70)
+    print("ALANA SYSTEM — GraphRAG Multi-hop com Memória Híbrida")
+    print("=" * 70)
 
-    return "\n\n".join(selected_blocks)
 
-# =========================================================
-# MAIN
-# =========================================================
-def main():
-    print("\n" + "=" * 60)
-    print("🤖 ALANA SYSTEM - INICIALIZAÇÃO")
-    print("=" * 60)
-
-    # -----------------------------------------------------
-    # CONFIGURAÇÕES
-    # -----------------------------------------------------
-    # Certifique-se que este arquivo existe em 'models/'
-    MODEL_PATH = "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
-
-    N_CTX = 4096  # Tamanho total da janela do modelo
-
-    # Definição rigorosa do orçamento de tokens
-    TOKEN_BUDGET = {
-        "system": 300,    # Instruções do sistema
-        "question": 100,  # Tamanho médio da pergunta
-        "answer": 512,    # Espaço reservado para a resposta da IA
-    }
-
-    # O que sobrar é usado para o contexto dos documentos
-    MAX_CONTEXT_TOKENS = (
-        N_CTX
-        - TOKEN_BUDGET["system"]
-        - TOKEN_BUDGET["question"]
-        - TOKEN_BUDGET["answer"]
-    )
-
-    logger.info(f"📐 Orçamento calculado para contexto: {MAX_CONTEXT_TOKENS} tokens")
-
-    # -----------------------------------------------------
-    # RAG COMPONENTS
-    # -----------------------------------------------------
-    print("📚 Inicializando memória vetorial...")
-    
-    # Embedder: Transforma texto em números
-    embedder = TextEmbedder(device="cuda")
-
-    # Vector Store: Banco de dados Qdrant
-    vector_store = VectorStore(
-        collection_name="alana_knowledge_base",
-        path="./qdrant_data"
-    )
-
-    # Query Engine: Realiza a busca semântica
-    query_engine = QueryEngine(
-        embedder=embedder,
-        vector_store=vector_store,
-        top_k=5,              # Busca até 5 trechos iniciais
-        score_threshold=0.35  # Filtra resultados irrelevantes
-    )
-
-    # -----------------------------------------------------
-    # LLM (Cérebro)
-    # -----------------------------------------------------
-    print(f"🧠 Carregando LLM local: {MODEL_PATH}")
+def _initialize_system() -> tuple[QueryEngine | None, LLMEngine | None]:
+    """Inicializa e retorna os componentes principais do sistema."""
+    logger.info("Inicializando componentes de memória")
     try:
-        llm = LLMEngine(
-            model_path=MODEL_PATH,
-            context_window=N_CTX,
-            n_gpu_layers=-1  # 0 = CPU, -1 = GPU (se disponível e configurado)
+        embedder = TextEmbedder(device="cuda")
+        vector_store = VectorStore(collection_name=VECTOR_COLLECTION, path=VECTOR_PATH)
+        graph_store = GraphStore(db_path=GRAPH_DB_PATH)
+
+        logger.info("Inicializando QueryEngine")
+        query_engine = QueryEngine(
+            embedder=embedder,
+            vector_store=vector_store,
+            graph_store=graph_store,
+            top_k=5,
         )
+
+        logger.info("Carregando modelo LLM local")
+        llm = LLMEngine(model_path=MODEL_PATH, context_window=N_CTX)
+
+        return query_engine, llm
+
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(f"Erro de configuração ou de caminho do modelo LLM: {e}")
     except Exception as e:
-        logger.error("❌ Falha crítica ao carregar modelo LLM")
-        logger.error(f"Detalhe do erro: {e}")
-        logger.error("DICA: Verifique se o arquivo .gguf está na pasta 'models/'")
+        logger.error(f"Falha inesperada ao inicializar o sistema: {e}")
+    
+    return None, None
+
+
+def _audit_evidence(result: dict):
+    """Registra as evidências recuperadas pela busca."""
+    seed_entities = result.get("seed_entities", [])
+    hop2_entities = result.get("new_entities_for_hop2", [])
+    graph_facts = result.get("graph_facts", [])
+
+    if seed_entities:
+        logger.info(f"Entidades semente: {seed_entities}")
+    if hop2_entities:
+        logger.info(f"Entidades expandidas (2º salto): {hop2_entities}")
+    logger.info(f"Fatos de grafo recuperados: {len(graph_facts)}")
+
+
+def _process_query(question: str, query_engine: QueryEngine, llm: LLMEngine):
+    """Processa uma única pergunta do usuário, da busca à geração da resposta."""
+    score_threshold = adaptive_score_threshold(question)
+    query_engine.score_threshold = score_threshold
+    logger.info(f"Score threshold ajustado para {score_threshold:.2f}")
+
+    logger.info("Executando recuperação híbrida multi-hop")
+    result = query_engine.query(question)
+
+    _audit_evidence(result)
+
+    if should_fallback(result):
+        print(
+            "\nAlana:\n"
+            "Não encontrei conhecimento suficiente na minha base "
+            "para responder essa pergunta com segurança."
+        )
         return
 
-    print("\n" + "=" * 60)
-    print("✅ ALANA ONLINE — Pergunte sobre seus documentos")
-    print("=" * 60)
+    logger.info("Gerando resposta a partir do contexto híbrido")
+    try:
+        graph_facts = result.get("graph_facts", [])
+        answer = llm.generate_answer(
+            query=question,
+            context_text=result["context_text"],
+            metadata={
+                "num_vector_chunks": len(result.get("vector_results", [])),
+                "num_graph_facts": len(graph_facts),
+                "confidence_hint": "Se a evidência for limitada, seja explícito sobre incertezas.",
+            },
+        )
 
-    # -----------------------------------------------------
-    # LOOP DE CONVERSA
-    # -----------------------------------------------------
+        if not answer.strip():
+            print(
+                "\nAlana:\n"
+                "Não consegui gerar uma resposta com base no contexto. "
+                "Pode haver um problema interno ou o assunto é muito complexo."
+            )
+            return
+
+        print("\nAlana:\n")
+        print(answer)
+
+        print(
+            f"\n[Contexto utilizado: "
+            f"{len(result.get('vector_results', []))} trechos vetoriais | "
+            f"{len(graph_facts)} fatos do grafo]"
+        )
+
+    except KeyError:
+        logger.error("A busca não retornou um 'context_text'. Verifique o QueryEngine.")
+    except Exception as e:
+        logger.error(f"Erro inesperado durante geração da resposta: {e}")
+
+
+def main():
+    """Função principal que orquestra a inicialização e o loop de interação."""
+    _print_banner()
+    query_engine, llm = _initialize_system()
+
+    if not all([query_engine, llm]):
+        return  # Encerra se a inicialização falhou
+
+    print("\nSistema pronto. Digite sua pergunta ou 'exit' para sair.")
+
     while True:
         try:
             question = input("\nVocê: ").strip()
         except KeyboardInterrupt:
-            print("\n👋 Encerrando Alana.")
+            print("\nEncerrando.")
             break
 
-        if question.lower() in {"sair", "exit", "quit"}:
-            print("👋 Encerrando Alana.")
+        if question.lower() in {"exit", "quit", "sair"}:
             break
-
         if not question:
-            print("⚠️ Pergunta vazia.")
             continue
 
-        # 1. Recuperação (Retrieval)
-        logger.info("🔍 Buscando contexto relevante...")
-        search_result = query_engine.query(question)
-        
-        # O QueryEngine retorna uma lista de dicts em 'contexts'
-        raw_contexts = search_result.get("contexts", [])
+        _process_query(question, query_engine, llm)
 
-        if not raw_contexts:
-            print("\n❌ Alana: Não encontrei informações relevantes nos documentos para responder isso.")
-            continue
 
-        # 2. Controle de Tokens e Formatação
-        #    Aqui usamos a função corrigida que lê os dicionários
-        context_text = truncate_context_by_budget(
-            contexts=raw_contexts,
-            max_tokens=MAX_CONTEXT_TOKENS
-        )
-
-        # 3. Geração (Generation)
-        logger.info("🤔 Gerando resposta...")
-        try:
-            answer = llm.generate_answer(
-                query=question,
-                context_text=context_text,
-                max_tokens=TOKEN_BUDGET["answer"],
-                temperature=0.1
-            )
-
-            print(f"\n🤖 Alana:\n{answer}")
-            print(
-                f"\n[Fonte: {len(raw_contexts)} trechos encontrados | "
-                f"Contexto usado: {estimate_tokens(context_text)} tokens]"
-            )
-
-        except Exception as e:
-            logger.error("❌ Erro durante inferência")
-            print(f"\nErro técnico: {e}")
-
-# =========================================================
-# ENTRYPOINT
-# =========================================================
 if __name__ == "__main__":
     main()
