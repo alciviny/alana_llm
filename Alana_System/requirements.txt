@@ -12,6 +12,7 @@ python-json-logger
 
 # Configuration
 python-dotenv
+pydantic
 
 llama-cpp-python
 

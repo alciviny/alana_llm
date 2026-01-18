@@ -26,7 +26,7 @@ from alana_system.memory.graph_store import GraphStore
 from alana_system.inference.llm_engine import LLMEngine
 from alana_system.preprocessing.entity_extractor import (
     EntityExtractor,
-    KnowledgeGraph,
+    KnowledgeGraphSchema,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,22 +36,26 @@ class IngestionPipeline:
 
     def __init__(
         self,
-        raw_dir: str,
         collection_name: str,
-        extraction_model_path: str,
+        raw_dir: Optional[str] = None,
+        extraction_model_path: Optional[str] = None,
         whisper_model: str = "small",
         embedder_device: str = "cpu",
+        embedder: Optional[TextEmbedder] = None,
+        llm: Optional[LLMEngine] = None,
     ):
         self.raw_dir = raw_dir
 
         # =====================================================
         # Loaders / Extratores de Conteúdo Bruto
         # =====================================================
-        self.pdf_loader = PDFLoader(raw_dir=raw_dir)
+        if raw_dir:
+            self.pdf_loader = PDFLoader(raw_dir=raw_dir)
+            self.audio_loader = AudioLoader(raw_dir=raw_dir)
+            self.note_loader = NoteLoader(raw_dir=raw_dir)
+
         self.pdf_extractor = PDFTextExtractor()
-        self.audio_loader = AudioLoader(raw_dir=raw_dir)
         self.audio_transcriber = AudioTranscriber(model_size=whisper_model)
-        self.note_loader = NoteLoader(raw_dir=raw_dir)
         self.note_extractor = NoteExtractor()
 
         # =====================================================
@@ -61,15 +65,30 @@ class IngestionPipeline:
         
         # --- Memória Vetorial (RAG) ---
         self.chunker = TextChunker(max_chars=800, overlap_chars=200)
-        self.embedder = TextEmbedder(device=embedder_device)
+        
+        if embedder:
+            self.embedder = embedder
+            logger.info("TextEmbedder reutilizado no Pipeline de Ingestão.")
+        else:
+            self.embedder = TextEmbedder(device=embedder_device)
+            logger.info("Novo TextEmbedder inicializado no Pipeline de Ingestão.")
+            
         self.vector_store = VectorStore(
             collection_name=collection_name, host="localhost", port=6333
         )
 
         # --- Memória de Grafo (Knowledge Graph) ---
         self.graph_store = GraphStore()
-        logger.info(f"Carregando LLM de extração de entidades de: {extraction_model_path}")
-        self.llm_for_extraction = LLMEngine(model_path=extraction_model_path)
+
+        if llm:
+            self.llm_for_extraction = llm
+            logger.info("LLMEngine reutilizado no Pipeline de Ingestão.")
+        else:
+            if not extraction_model_path or not Path(extraction_model_path).is_file():
+                raise ValueError("Se 'llm' não for fornecido, 'extraction_model_path' é obrigatório e deve ser um arquivo válido.")
+            logger.info(f"Carregando LLM de extração de entidades de: {extraction_model_path}")
+            self.llm_for_extraction = LLMEngine(model_path=extraction_model_path)
+        
         self.entity_extractor = EntityExtractor(llm=self.llm_for_extraction)
         logger.info("IngestionPipeline inicializado com EntityExtractor e GraphStore")
 
