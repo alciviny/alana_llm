@@ -21,7 +21,7 @@ class Entity:
 @dataclass(frozen=True)
 class Relation:
     subject: str
-    relation: str
+    predicate: str
     object: str
 
 @dataclass
@@ -74,10 +74,10 @@ class EntityExtractor:
         except ValueError as e:
             # Erro específico de parsing do JSON
             logger.error(f"Erro de parsing de JSON na extração: {e}")
-            return KnowledgeGraph(entities=[], relations=[])
-        except Exception as e:
+        except Exception:
             logger.exception("Falha crítica e inesperada na extração de entidades")
-            return KnowledgeGraph(entities=[], relations=[])
+
+        return KnowledgeGraph(entities=[], relations=[])
 
     # =========================
     # Internals
@@ -85,31 +85,21 @@ class EntityExtractor:
 
     def _build_prompt(self) -> str:
         return """
-Você é um sistema de extração de conhecimento.
+Você é um sistema sênior de extração de conhecimento para GraphRAG.
 
-Tarefa:
-A partir do TEXTO fornecido, extraia um GRAFO DE CONHECIMENTO.
+Tarefa: Extraia um GRAFO DE CONHECIMENTO do texto.
 
-Regras OBRIGATÓRIAS:
-- Responda APENAS com JSON válido.
-- NÃO escreva explicações.
-- NÃO use markdown.
-- NÃO adicione texto antes ou depois do JSON.
+Regras Cruciais de Normalização:
+1. Nomes Técnicos: Use o nome padrão da indústria (ex: use "PostgreSQL" em vez de "Postgres" ou "Bancodedados SQL").
+2. Versões: Mantenha a versão se for vital, mas padronize o formato (ex: "Llama 3", não "Llama3").
+3. Siglas: Prefira o nome por extenso se disponível, ou a sigla mais comum (ex: "Inteligência Artificial").
+4. Entidades Únicas: Se o texto cita "Vinícius" e depois "ele", a entidade é "Vinícius".
 
-Formato exato da resposta:
+Formato da Resposta (APENAS JSON):
 {
-  "entities": [
-    {"name": "string", "type": "Pessoa|Lugar|Projeto|Conceito|Data|Organização"}
-  ],
-  "relations": [
-    {"subject": "string", "relation": "string", "object": "string"}
-  ]
+  "entities": [{"name": "string", "type": "Pessoa|Lugar|Projeto|Conceito|Data|Organização"}],
+  "relations": [{"subject": "string", "predicate": "string", "object": "string"}]
 }
-
-Regras semânticas:
-- Normalize nomes (ex: "Alan Turing", não pronomes).
-- Use verbos claros nas relações (ex: "criou", "trabalhou_em").
-- Não invente entidades que não existam no texto.
 """
 
     def _safe_json_load(self, raw_text: str) -> Dict[str, Any]:
@@ -121,7 +111,7 @@ Regras semânticas:
             end = raw_text.rindex("}") + 1
             json_str = raw_text[start:end]
             return json.loads(json_str)
-        except Exception as e:
+        except ValueError as e:
             logger.error("Erro ao decodificar JSON do LLM")
             logger.debug("Texto recebido:\n%s", raw_text)
             raise ValueError("JSON inválido retornado pelo LLM") from e
@@ -138,11 +128,11 @@ Regras semânticas:
                 entities.append(Entity(name=e["name"], type=e["type"]))
 
         for r in data.get("relations", []):
-            if {"subject", "relation", "object"} <= r.keys():
+            if {"subject", "predicate", "object"} <= r.keys():
                 relations.append(
                     Relation(
                         subject=r["subject"],
-                        relation=r["relation"],
+                        predicate=r["predicate"],
                         object=r["object"],
                     )
                 )
