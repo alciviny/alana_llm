@@ -1,11 +1,16 @@
 # Core ML/Vector DB dependencies
 numpy
+scipy
 sentence-transformers
 qdrant-client
 torch
+torchvision
+torchaudio
 
 # PDF Parsing
 pdfplumber
+pymupdf
+# fitz is removed because it conflicts with pymupdf
 
 # Logging
 python-json-logger
@@ -14,10 +19,24 @@ python-json-logger
 python-dotenv
 pydantic
 
-llama-cpp-python
-
 # Model Downloading
 huggingface-hub[cli]
 
 litellm
 google-generativeai
+transformers
+PyPDF2
+Pillow
+requests
+beautifulsoup4
+fastapi
+uvicorn
+spacy
+openai-whisper
+faster-whisper
+charset-normalizer
+tiktoken
+python-multipart
+llama-cpp-python
+websockets
+psutil

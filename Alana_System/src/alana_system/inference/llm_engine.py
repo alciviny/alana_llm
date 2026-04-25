@@ -1,7 +1,13 @@
 import logging
+import time
 from typing import Optional, List, Dict, Any
 
 from litellm import completion
+try:
+    import tiktoken
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+except ImportError:
+    tokenizer = None
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +28,25 @@ class LLMEngine:
 
     def __init__(
         self,
-        model_path: Optional[str] = None,  # Mantido por compatibilidade futura
+        model_path: Optional[str] = None,
         context_window: int = 8192,
         model_priority: Optional[List[str]] = None,
     ):
+        import os
         self.context_window = context_window
-        self.model_priority = model_priority or ["gemini/gemini-2.5-flash"]
+        
+        # Carrega o modelo do .env
+        default_model = os.getenv("DEFAULT_MODEL", "ollama/llama3.1")
+        
+        # Se for um modelo OLLAMA, desativamos fallbacks externos por segurança (Offline Focus)
+        if "ollama" in default_model.lower():
+            self.model_priority = [default_model]
+            logger.info(f"🏠 MODO OFFLINE ATIVADO: Usando apenas {default_model}")
+        else:
+            self.model_priority = model_priority or [default_model]
 
-        logger.info(
-            f"🚀 LLMEngine inicializada | Context window: {context_window} | "
-            f"Prioridade de modelos: {self.model_priority}"
-        )
+        self.model_path = model_path
+        logger.info(f"🚀 LLMEngine Pronta | Foco: {self.model_priority[0]}")
 
     # =========================
     # Utilitários internos
@@ -40,11 +54,22 @@ class LLMEngine:
 
     def _truncate_context(self, text: Optional[str]) -> str:
         """
-        Garante que o contexto não ultrapasse o limite definido.
+        Garante que o contexto não ultrapasse o limite de tokens definido.
+        Usa tiktoken para precisão ou fallback para estimativa de caracteres.
         """
         if not text:
             return ""
-        return text[: self.context_window]
+            
+        if tokenizer:
+            tokens = tokenizer.encode(text)
+            if len(tokens) > self.context_window:
+                logger.warning(f"⚠️ Contexto truncado de {len(tokens)} para {self.context_window} tokens.")
+                return tokenizer.decode(tokens[: self.context_window])
+            return text
+        else:
+            # Fallback: 1 token ~= 4 caracteres (estimativa conservadora)
+            char_limit = self.context_window * 4
+            return text[:char_limit]
 
     def _build_prompt(
         self,
@@ -103,18 +128,34 @@ Se a resposta não estiver no contexto, diga explicitamente que não encontrou a
             messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = completion(
-                model=self.model_priority[0],
-                messages=messages,
-                fallbacks=self.model_priority[1:],
-                temperature=temperature,
-            )
+            start_time = time.perf_counter()
+            
+            # Prepara argumentos dinâmicos para suportar JSON Mode nativo
+            kwargs = {
+                "model": self.model_priority[0],
+                "messages": messages,
+                "fallbacks": self.model_priority[1:],
+                "temperature": temperature,
+            }
+            
+            # Ativa modo JSON estruturado se solicitado via metadata
+            if metadata and metadata.get("force_json", False):
+                kwargs["response_format"] = {"type": "json_object"}
+
+            # Garante fôlego para extrações técnicas longas
+            kwargs["max_tokens"] = 4096 
+            
+            # Define um timeout maior para modelos locais (paciente com o hardware)
+            kwargs["request_timeout"] = 300 # 5 minutos para processamento pesado local
+
+            response = completion(**kwargs)
+            duration = time.perf_counter() - start_time
 
             answer = response.choices[0].message.content.strip()
 
             # Loga o modelo real usado (primário ou fallback)
             used_model = getattr(response, "model", "unknown")
-            logger.info(f"✅ Resposta gerada com sucesso | Modelo usado: {used_model}")
+            logger.info(f"✅ Resposta gerada com sucesso | Modelo usado: {used_model} | ⏱️ Tempo: {duration:.4f}s")
 
             return answer
 

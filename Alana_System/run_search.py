@@ -28,8 +28,8 @@ logger = logging.getLogger("alana.main")
 # =========================================================
 # CONFIGURAÇÕES GERAIS
 # =========================================================
-MODEL_PATH = "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
-N_CTX = 4096
+MODEL_PATH = None # Removido uso de modelo local, agora via litellm
+N_CTX = 8192
 
 VECTOR_COLLECTION = "alana_knowledge_base"
 VECTOR_PATH = "./qdrant_data"
@@ -85,8 +85,8 @@ def _initialize_system() -> tuple[QueryEngine | None, LLMEngine | None]:
             top_k=5,
         )
 
-        logger.info("Carregando modelo LLM local")
-        llm = LLMEngine(model_path=MODEL_PATH, context_window=N_CTX)
+        logger.info("Carregando modelo LLM via API (Gemini)")
+        llm = LLMEngine(context_window=N_CTX)
 
         return query_engine, llm
 

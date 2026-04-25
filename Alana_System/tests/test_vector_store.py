@@ -36,7 +36,8 @@ def test_vector_store():
                 },
             )
         ]
-        mock_client_instance.search.return_value = mock_search_response
+        # Ajuste para search() usar query_points() no VectorStore
+        mock_client_instance.query_points.return_value = MagicMock(points=mock_search_response)
 
         # 3. Execução da lógica do teste
         # O TextEmbedder ainda funciona normalmente, baixando o modelo.
@@ -47,10 +48,11 @@ def test_vector_store():
         # O teste original usava um FakeChunk, vamos usar o mesmo princípio
         # para criar os dados de entrada.
         class FakeChunk:
-            def __init__(self, cid, text):
+            def __init__(self, cid, text, source_name="test_source"):
                 self.chunk_id = cid
                 self.page_number = 1
                 self.text = text
+                self.source_name = source_name
 
         fake_chunks = [
             FakeChunk("a" * 64, "Risco financeiro em mercados voláteis"),
@@ -78,4 +80,4 @@ def test_vector_store():
         mock_client_instance.get_collections.assert_called_once()
         mock_client_instance.create_collection.assert_called_once()
         mock_client_instance.upsert.assert_called_once()
-        mock_client_instance.search.assert_called_once()
+        mock_client_instance.query_points.assert_called_once()

@@ -18,6 +18,7 @@ Não conhece:
 from __future__ import annotations
 
 import logging
+import time
 from typing import List, Dict, Any
 
 
@@ -68,114 +69,117 @@ class QueryEngine:
 
     def query(self, question: str) -> Dict[str, Any]:
         """
-        Executa consulta híbrida GraphRAG com expansão multi-hop (2 saltos).
+        Executa consulta híbrida GraphRAG com Re-Ranking Neural (QI Superior).
         """
-        logger.info(f"Iniciando busca GraphRAG Multi-hop para: {question}")
+        logger.info(f"🔍 Iniciando Busca Inteligente com Reranker: {question}")
+        start_time = time.perf_counter()
 
         # -------------------------------------------------
-        # 1. Busca Semântica Vetorial (Qdrant)
+        # 1. Busca Semântica Vetorial Expandida (Top 15)
         # -------------------------------------------------
+        t0 = time.perf_counter()
         query_embedding = self.embedder.embed_query(question)
-        vector_results = self.vector_store.search(
+        initial_results = self.vector_store.search(
             query_vector=query_embedding,
-            top_k=self.top_k,
+            top_k=self.top_k * 3, # Busca mais para o Reranker filtrar
             score_threshold=self.score_threshold,
         )
+        t_vector = time.perf_counter() - t0
 
         # -------------------------------------------------
-        # 2. Extração de Entidades Semente
+        # 2. Re-Ranking Neural (Cross-Encoder) - Aumenta o QI
         # -------------------------------------------------
+        t0 = time.perf_counter()
+        vector_results = self._rerank_results(question, initial_results)
+        t_rerank = time.perf_counter() - t0
+
+        # -------------------------------------------------
+        # 3. Extração de Entidades e Deep Graph Search
+        # -------------------------------------------------
+        t0 = time.perf_counter()
         seed_entities = self._extract_seed_entities(question, vector_results)
-        logger.debug(f"Entidades semente identificadas: {seed_entities}")
+        graph_facts = self.graph_store.query_subgraph(seed_entities, limit=40)
+        t_graph = time.perf_counter() - t0
 
         # -------------------------------------------------
-        # 3. Graph Retrieval – 1º Salto
+        # 4. Montagem do Contexto
         # -------------------------------------------------
-        logger.info(f"Executando 1º salto no grafo ({len(seed_entities)} entidades).")
-        first_hop_facts = self.graph_store.query_subgraph(
-            seed_entities,
-            limit=15
-        )
+        context_text = self._build_hybrid_context(vector_results, graph_facts)
 
-        # -------------------------------------------------
-        # 4. Identificação de novas entidades (para 2º salto)
-        # -------------------------------------------------
-        seed_entity_set = {e.lower() for e in seed_entities}
-        new_entities = set()
-
-        for fact in first_hop_facts:
-            subj = fact["subject"].lower()
-            obj = fact["object"].lower()
-
-            if subj not in seed_entity_set:
-                new_entities.add(subj)
-            if obj not in seed_entity_set:
-                new_entities.add(obj)
-
-        # -------------------------------------------------
-        # 5. Graph Retrieval – 2º Salto
-        # -------------------------------------------------
-        second_hop_facts = []
-        if new_entities:
-            logger.info(f"Executando 2º salto no grafo ({len(new_entities)} entidades).")
-            second_hop_facts = self.graph_store.query_subgraph(
-                list(new_entities),
-                limit=10
-            )
-
-        # -------------------------------------------------
-        # 6. Combinação e Deduplicação dos Fatos
-        # -------------------------------------------------
-        all_graph_facts = {
-            (f["subject"], f["relation"], f["object"], f.get("source_doc"))
-            : f
-            for f in (first_hop_facts + second_hop_facts)
-        }
-        all_graph_facts = list(all_graph_facts.values())
-
-        # -------------------------------------------------
-        # 7. Montagem do Contexto Híbrido Final
-        # -------------------------------------------------
-        context_text = self._build_hybrid_context(
-            vector_results,
-            all_graph_facts
-        )
+        total_time = time.perf_counter() - start_time
+        logger.info(f"⚡ RAG Master concluído em {total_time:.4f}s | QI Elevado")
 
         return {
             "question": question,
             "context_text": context_text,
-            "vector_results": vector_results,
-            "graph_facts": all_graph_facts,
-            "seed_entities": seed_entities,
-            "new_entities_for_hop2": list(new_entities),
+            "performance": {
+                "vector_initial": t_vector,
+                "rerank": t_rerank,
+                "graph": t_graph,
+                "total": total_time
+            }
         }
+
+    def _rerank_results(self, query: str, results: List[Dict]) -> List[Dict]:
+        """
+        Usa um modelo Cross-Encoder local para reordenar os resultados.
+        """
+        if not results: return []
+        
+        try:
+            from sentence_transformers import CrossEncoder
+            # Modelo leve e veloz para rodar local
+            model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=self.embedder.device)
+            
+            # Prepara pares (pergunta, documento)
+            pairs = [[query, r.get('text', '')] for r in results]
+            scores = model.predict(pairs)
+            
+            # Associa scores aos resultados e ordena
+            for i, score in enumerate(scores):
+                results[i]['rerank_score'] = float(score)
+            
+            sorted_results = sorted(results, key=lambda x: x['rerank_score'], reverse=True)
+            return sorted_results[:self.top_k]
+            
+        except Exception as e:
+            logger.warning(f"Falha no Reranker: {e}. Usando ordem original.")
+            return results[:self.top_k]
 
     def _extract_seed_entities(self, question: str, vector_results: List[Dict]) -> List[str]:
         """
-        Identifica termos-chave da pergunta e dos contextos recuperados
-        para ancorar a busca no Grafo.
+        Identifica entidades reais usando spaCy para ancorar a busca no Grafo.
+        Melhoria Industrial: Não ignora termos curtos (GPU, CPU, RAM).
         """
         entities = set()
-        stopwords = {
-            "como", "quando", "porque", "explique", "qual", "quais",
-            "sobre", "onde", "quem", "fale", "descreva"
-        }
+        
+        # 1. Extração da pergunta usando spaCy (se disponível)
+        from alana_system.preprocessing.entity_extractor import EntityExtractor
+        # Reutilizamos a lógica de extração mas de forma leve para busca
+        temp_extractor = EntityExtractor(llm=self.llm_engine, use_spacy=True)
+        
+        if temp_extractor.use_spacy:
+            # Extrai entidades da pergunta
+            q_doc = temp_extractor.nlp(question)
+            for ent in q_doc.ents:
+                entities.add(ent.text.strip().lower())
+            
+            # 2. Extrai das partes mais relevantes dos resultados vetoriais
+            for res in vector_results[:2]:
+                text = res.get("text", "")
+                r_doc = temp_extractor.nlp(text[:1000]) # Apenas o começo para performance
+                for ent in r_doc.ents:
+                    entities.add(ent.text.strip().lower())
+        
+        # Fallback para palavras em maiúsculo (identifica nomes próprios/siglas)
+        if not entities:
+            import re
+            # Busca siglas e palavras capitalizadas
+            matches = re.findall(r'\b[A-Z][a-zA-Z0-9]{1,}\b', question)
+            for m in matches:
+                entities.add(m.lower())
 
-        # 1. Termos da pergunta
-        for word in question.replace("?", "").split():
-            w = word.strip(".,!").lower()
-            if w not in stopwords and len(w) > 4:
-                entities.add(w)
-
-        # 2. Entidades recorrentes nos chunks (usando Capitalização como pista)
-        for result in vector_results[:3]: # Focamos nos 3 mais relevantes
-            text = result.get("text", "")
-            for token in text.split():
-                clean_token = token.strip(".,!()\"")
-                # Se começa com Maiúscula e não é início trivial de frase
-                if clean_token.istitle() and len(clean_token) > 3:
-                    entities.add(clean_token.lower())
-
+        logger.info(f"📍 Entidades semente identificadas para busca no Grafo: {list(entities)}")
         return list(entities)
 
     def _build_hybrid_context(self, vector_results: List[Dict], graph_facts: List[Dict]) -> str:

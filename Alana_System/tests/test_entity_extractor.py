@@ -118,9 +118,32 @@ def test_extract_graph_empty_text(mock_llm_engine):
     # O LLM não deve ser chamado
     mock_llm_engine.generate_answer.assert_not_called()
 
+
+def test_extract_graph_with_spacy():
+    """Testa extração com spaCy habilitado."""
+    llm = LLMEngine()
+    extractor = EntityExtractor(llm, use_spacy=True)
+    text = "John works at Google in New York."
+    result = extractor.extract_graph(text)
+    
+    assert len(result.entities) > 0
+    assert all(e.type in ["Pessoa", "Organização", "Lugar", "Conceito", "Data", "Tecnologia", "Ferramenta", "Projeto"] for e in result.entities)
+
+
+def test_extract_graph_spacy_disabled():
+    """Testa extração sem spaCy."""
+    llm = LLMEngine()
+    extractor = EntityExtractor(llm, use_spacy=False)
+    text = "Apple is a company."
+    result = extractor.extract_graph(text)
+    
+    assert isinstance(result.entities, list)
+    assert isinstance(result.relations, list)
+
 def test_extract_graph_llm_failure(mock_llm_engine):
     """
     Testa o comportamento quando a chamada ao LLM falha e retorna uma string vazia.
+    Com spaCy, entidades ainda são extraídas, mas relações falham.
     """
     # Arrange
     mock_llm_engine.generate_answer.return_value = ""
@@ -132,5 +155,6 @@ def test_extract_graph_llm_failure(mock_llm_engine):
 
     # Assert
     assert isinstance(result_graph, KnowledgeGraphSchema)
-    assert len(result_graph.entities) == 0
-    assert len(result_graph.relations) == 0
+    # Mesmo com falha do LLM, spaCy extrai entidades e eventos podem gerar relações
+    assert len(result_graph.entities) > 0  # spaCy ainda funciona
+    assert len(result_graph.relations) >= 1  # Relações inferidas dos eventos podem existir

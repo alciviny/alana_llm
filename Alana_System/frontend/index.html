@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alana System | Engineering Terminal</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <h1>Alana System</h1>
+            </div>
+            <p class="subtitle">Autonomous Engineering & Cognitive Ingestion</p>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="tabs">
+            <button class="tab-btn active" onclick="switchTab('ingestion')">Ingestão</button>
+            <button class="tab-btn" onclick="switchTab('knowledge')">Cérebro</button>
+            <button class="tab-btn" onclick="switchTab('engineering')">Missões</button>
+        </nav>
+
+        <!-- Main Content -->
+        <main>
+            <!-- Ingestion Tab -->
+            <div id="ingestion-tab" class="tab-content active">
+                <div class="card">
+                    <h2>Terminal de Ingestão</h2>
+                    <p>Submeta documentação técnica para expansão da base de conhecimento.</p>
+                    
+                    <div class="drop-zone" id="drop-zone">
+                        <div class="icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                        </div>
+                        <span class="drop-text">Arraste arquivos ou <strong>selecione no diretório</strong></span>
+                        <input type="file" id="file-input" hidden accept=".pdf,.txt,.md,.mp3,.wav,.m4a">
+                    </div>
+
+                    <div class="feedback-area hidden" id="feedback-area">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="progress-bar"></div>
+                        </div>
+                        <p class="status-text" id="status-text">Processando dados...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Knowledge Tab -->
+            <div id="knowledge-tab" class="tab-content">
+                <div class="card graph-card">
+                    <div class="card-header">
+                        <h2>Grafo de Conhecimento Neural</h2>
+                        <button class="refresh-btn" onclick="loadGraph()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                        </button>
+                    </div>
+                    <p>Mapeamento dinâmico de entidades e relações extraídas via IA.</p>
+                    <div id="knowledge-graph" class="graph-container"></div>
+                </div>
+            </div>
+
+            <!-- Engineering Tab -->
+            <div id="engineering-tab" class="tab-content">
+                <div class="card">
+                    <h2>Operações de Engenharia</h2>
+                    <p>Defina objetivos complexos para execução autônoma em ambiente controlado.</p>
+                    
+                    <div class="input-group">
+                        <textarea id="mission-input" placeholder="Defina a missão técnica..."></textarea>
+                        <button id="run-mission-btn">Executar Missão</button>
+                    </div>
+
+                    <!-- Agent Display -->
+                    <div class="agent-display hidden" id="agent-display">
+                        <div class="thought-bubble">
+                            <div class="bubble-header">Raciocínio Lógico</div>
+                            <p id="agent-thought">Aguardando inicialização...</p>
+                        </div>
+
+                        <div class="thought-bubble critique-bubble">
+                            <div class="bubble-header">Reflexão Crítica</div>
+                            <p id="agent-critique">Analisando possíveis falhas...</p>
+                        </div>
+
+                        <div class="terminal-container">
+                            <div class="terminal-header">
+                                <div class="title">Console de Execução</div>
+                            </div>
+                            <pre id="agent-terminal">IDLE</pre>
+                        </div>
+
+                        <!-- Approval Panel -->
+                        <div id="approval-panel" class="approval-panel hidden">
+                            <div class="approval-header">
+                                <span class="warning-icon">⚠</span>
+                                <h3>Autorização de Segurança Necessária</h3>
+                            </div>
+                            <p id="approval-text">O agente solicita permissão para executar uma ação de alto impacto.</p>
+                            <div class="approval-actions">
+                                <button id="approve-btn" class="btn-confirm">APROVAR EXECUÇÃO</button>
+                                <button id="reject-btn" class="btn-cancel">ABORTAR</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Messages -->
+            <div class="message-box hidden" id="message-box">
+                <p id="message-text"></p>
+            </div>
+
+            <!-- Monitor -->
+            <div class="log-console" id="log-console">
+                <h3><div class="status-indicator active"></div>Monitor do Sistema</h3>
+                <pre id="log-text">Aguardando telemetria...</pre>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -74,7 +74,7 @@ class TextEmbedder:
             if torch and torch.cuda.is_available():
                 device = "cuda"
             else:
-                device = "cuda"
+                device = "cpu"
 
         logger.info(
             f"Carregando modelo de embedding | "
@@ -156,6 +156,17 @@ class TextEmbedder:
         """
         return self.model.encode(
             text,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        """
+        Gera embeddings para uma lista de strings puras.
+        """
+        return self.model.encode(
+            texts,
             convert_to_numpy=True,
             normalize_embeddings=True,
             show_progress_bar=False,

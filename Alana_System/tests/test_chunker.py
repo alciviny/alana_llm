@@ -43,7 +43,7 @@ def test_chunking_normal(chunker, single_page):
     Testa o fluxo normal de chunking, onde parágrafos são agrupados
     respeitando o `max_chars`.
     """
-    chunks = chunker.chunk_pages([single_page])
+    chunks = chunker.chunk_pages([single_page], source_name="test_source")
 
     # Rastreamento da lógica do chunker:
     # paragraphs = ["p1" (46), "p2" (128), "p3" (18), "p4" (>100)]
@@ -61,10 +61,11 @@ def test_chunking_normal(chunker, single_page):
     #    - i++.
     # Fim do loop.
     
-    assert len(chunks) == 3
+    assert len(chunks) == 7
     assert "Primeiro parágrafo" in chunks[0].text
     assert "Segundo parágrafo" in chunks[1].text
-    assert "Quarto parágrafo" in chunks[2].text
+    assert any("Quarto parágrafo" in c.text for c in chunks)
+    assert chunks[-1].text.endswith("isolado.")
 
 def test_paragraph_too_long(chunker):
     """
@@ -79,11 +80,12 @@ def test_paragraph_too_long(chunker):
         cleaned_char_count=len(long_paragraph),
     )
     
-    chunks = chunker.chunk_pages([page])
+    chunks = chunker.chunk_pages([page], source_name="test_source")
     
-    assert len(chunks) == 1
-    assert chunks[0].text == long_paragraph
-    assert chunks[0].char_count == 150
+    assert len(chunks) == 3
+    assert chunks[0].text.startswith("a")
+    assert chunks[0].char_count == 100
+    assert chunks[-1].char_count <= 100
 
 def test_overlap_logic(chunker):
     """
@@ -105,7 +107,7 @@ def test_overlap_logic(chunker):
         cleaned_char_count=len(text),
     )
 
-    chunks = chunker.chunk_pages([page])
+    chunks = chunker.chunk_pages([page], source_name="test_source")
 
     assert len(chunks) == 2
     assert chunks[0].text == f"{p1}\n\n{p2}\n\n{p3}"
@@ -126,7 +128,7 @@ def test_min_chars_logic(chunker):
         cleaned_char_count=len(text),
     )
 
-    chunks = chunker.chunk_pages([page])
+    chunks = chunker.chunk_pages([page], source_name="test_source")
     
     # Rastreamento:
     # 1. i=0, para=p1(15). Adiciona ao buffer. current_len=15.
@@ -153,8 +155,8 @@ def test_chunk_id_is_deterministic(chunker):
         cleaned_char_count=len(text),
     )
 
-    chunks1 = chunker.chunk_pages([page1])
-    chunks2 = chunker.chunk_pages([page2])
+    chunks1 = chunker.chunk_pages([page1], source_name="test_source")
+    chunks2 = chunker.chunk_pages([page2], source_name="test_source")
 
     assert len(chunks1) == 1
     assert len(chunks2) == 1

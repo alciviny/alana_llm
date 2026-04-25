@@ -1,0 +1,30 @@
+# Exclude local environment and git
+.venv
+.git
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude large local data or logs
+alana.log
+logs/
+alana_memoria_local/
+data/
+qdrant_data/
+qdrant_storage/
+.benchmarks/
+.pytest_cache/
+
+# Exclude local binaries
+*.exe
+alana_ingestor
+alana_search
+
+# Exclude local models (very large!)
+models/
+
+# Exclude local notebooks
+notebooks/
+playground/

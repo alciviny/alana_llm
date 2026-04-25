@@ -22,10 +22,9 @@ from pathlib import Path
 from typing import List
 import logging
 
-import pdfplumber
+import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class PageText:
@@ -44,33 +43,13 @@ class PageText:
 
 class PDFTextExtractor:
     """
-    Extrator de texto nativo de PDFs.
-
-    Responsabilidades:
-    - Abrir PDFs
-    - Iterar páginas
-    - Extrair texto bruto
-    - Retornar estrutura por página
-
-    Garantias:
-    - Determinístico
-    - Idempotente
-    - Sem efeitos colaterais
+    Extrator de texto de alta performance para PDFs.
+    Utiliza PyMuPDF para leitura rápida e eficiente.
     """
 
     def extract(self, pdf_path: Path) -> List[PageText]:
         """
-        Extrai texto bruto de todas as páginas de um PDF.
-
-        Args:
-            pdf_path (Path): Caminho do arquivo PDF.
-
-        Returns:
-            List[PageText]: Lista de objetos PageText, um por página.
-
-        Raises:
-            FileNotFoundError: Se o PDF não existir.
-            RuntimeError: Se ocorrer erro na leitura do PDF.
+        Extrai texto bruto de todas as páginas de um PDF usando PyMuPDF.
         """
 
         if not pdf_path.exists():
@@ -79,23 +58,22 @@ class PDFTextExtractor:
         pages: List[PageText] = []
 
         try:
-            with pdfplumber.open(pdf_path) as pdf:
-                total_pages = len(pdf.pages)
+            with fitz.open(str(pdf_path)) as doc:
+                total_pages = len(doc)
 
-                for index, page in enumerate(pdf.pages):
-                    raw_text = page.extract_text() or ""
-                    raw_text = raw_text.strip()
+                for page_num, page in enumerate(doc, 1):
+                    raw_text = page.get_text("text").strip()
 
-                    page_text = PageText(
-                        page_number=index + 1,
-                        text=raw_text,
-                        char_count=len(raw_text)
+                    pages.append(
+                        PageText(
+                            page_number=page_num,
+                            text=raw_text,
+                            char_count=len(raw_text)
+                        )
                     )
 
-                    pages.append(page_text)
-
             logger.info(
-                f"Extração concluída | "
+                f"Extração acelerada concluída | "
                 f"arquivo={pdf_path.name} | "
                 f"paginas={total_pages}"
             )
@@ -104,8 +82,8 @@ class PDFTextExtractor:
 
         except Exception as exc:
             logger.exception(
-                f"Falha ao extrair texto do PDF: {pdf_path.name}"
+                f"Falha ao extrair texto (PyMuPDF): {pdf_path.name}"
             )
             raise RuntimeError(
-                f"Erro na extração de texto: {pdf_path.name}"
+                f"Erro na extração acelerada: {pdf_path.name}"
             ) from exc

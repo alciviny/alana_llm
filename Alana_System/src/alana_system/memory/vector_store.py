@@ -230,17 +230,14 @@ class VectorStore:
                 f"recebido={len(query_vector)}"
             )
 
-        # CORREÇÃO AQUI: Usamos query_points em vez de search
-        response = self.client.query_points(
+        # Usando o método padrão search da qdrant_client
+        results = self.client.search(
             collection_name=self.collection_name,
-            query=query_vector.tolist(),
+            query_vector=query_vector.tolist(),
             limit=top_k,
             query_filter=filters,
             score_threshold=score_threshold,
         )
-
-        # O resultado agora vem dentro da propriedade .points
-        results = response.points
 
         response_list: List[Dict[str, Any]] = []
         for r in results:

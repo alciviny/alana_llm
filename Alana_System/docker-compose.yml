@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: alana_qdrant
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: always
+    networks:
+      - alana_net
+
+  alana_bridge:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: alana_bridge_api
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - OLLAMA_API_BASE=http://host.docker.internal:11434
+    volumes:
+      - ./alana_memoria_local:/app/alana_memoria_local
+      - ./data:/app/data
+      - .:/app
+    depends_on:
+      - qdrant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: on-failure
+    networks:
+      - alana_net
+
+#  alana_orchestrator:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile.go
+#    container_name: alana_orchestrator
+#    environment:
+#      - PYTHON_SIDECAR_URL=http://alana_bridge:8000
+#      - QDRANT_HOST=alana_qdrant
+#      - INGESTION_TIMEOUT_SEC=3600
+#    volumes:
+#      - ./data:/app/data
+#    depends_on:
+#      alana_bridge:
+#        condition: service_healthy
+#      qdrant:
+#        condition: service_started
+#    networks:
+#      - alana_net
+
+networks:
+  alana_net:
+    driver: bridge

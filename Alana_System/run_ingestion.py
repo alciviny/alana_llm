@@ -1,5 +1,7 @@
 import logging
 import time
+import json
+import traceback
 from pathlib import Path
 from typing import List, Optional
 import sys
@@ -46,6 +48,8 @@ class IngestionPipeline:
         embedder_device: str = "cpu",
         embedder: Optional[TextEmbedder] = None,
         llm: Optional[LLMEngine] = None,
+        vector_store: Optional[VectorStore] = None,
+        audio_transcriber: Optional[AudioTranscriber] = None,
     ):
         self.raw_dir = raw_dir
 
@@ -58,7 +62,14 @@ class IngestionPipeline:
             self.note_loader = NoteLoader(raw_dir=raw_dir)
 
         self.pdf_extractor = PDFTextExtractor()
-        self.audio_transcriber = AudioTranscriber(model_size=whisper_model)
+        
+        if audio_transcriber:
+            self.audio_transcriber = audio_transcriber
+            logger.info("AudioTranscriber reutilizado no Pipeline de Ingestão.")
+        else:
+            self.audio_transcriber = AudioTranscriber(model_size=whisper_model)
+            logger.info("Novo AudioTranscriber inicializado no Pipeline de Ingestão.")
+            
         self.note_extractor = NoteExtractor()
 
         # =====================================================
@@ -76,9 +87,13 @@ class IngestionPipeline:
             self.embedder = TextEmbedder(device=embedder_device)
             logger.info("Novo TextEmbedder inicializado no Pipeline de Ingestão.")
             
-        self.vector_store = VectorStore(
-            collection_name=collection_name, path="alana_memoria_local"
-        )
+        if vector_store:
+            self.vector_store = vector_store
+            logger.info("VectorStore reutilizado no Pipeline de Ingestão.")
+        else:
+            self.vector_store = VectorStore(
+                collection_name=collection_name, path="alana_memoria_local"
+            )
 
         # --- Memória de Grafo (Knowledge Graph) ---
         self.graph_store = GraphStore()
@@ -87,10 +102,11 @@ class IngestionPipeline:
             self.llm_for_extraction = llm
             logger.info("LLMEngine reutilizado no Pipeline de Ingestão.")
         else:
-            if not extraction_model_path or not Path(extraction_model_path).is_file():
-                raise ValueError("Se 'llm' não for fornecido, 'extraction_model_path' é obrigatório e deve ser um arquivo válido.")
-            logger.info(f"Carregando LLM de extração de entidades de: {extraction_model_path}")
-            self.llm_for_extraction = LLMEngine(model_path=extraction_model_path)
+            if extraction_model_path:
+                logger.info(f"Carregando LLM de extração de entidades de: {extraction_model_path}")
+                self.llm_for_extraction = LLMEngine(model_priority=[extraction_model_path])
+            else:
+                self.llm_for_extraction = LLMEngine()
         
         self.entity_extractor = EntityExtractor(llm=self.llm_for_extraction)
         logger.info("IngestionPipeline inicializado com EntityExtractor e GraphStore")
@@ -111,55 +127,90 @@ class IngestionPipeline:
     # Processadores por Tipo de Fonte
     # =====================================================
     def _process_pdfs(self) -> None:
-        logger.info("Iniciando ingestão de PDFs")
+        logger.info("Iniciando ingestão PARALELA de PDFs")
         pdf_docs = self.pdf_loader.discover()
-        if not pdf_docs:
-            logger.info("Nenhum PDF encontrado.")
-            return
-        for doc in pdf_docs:
-            self._process_single_pdf(doc)
+        if not pdf_docs: return
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            executor.map(self._process_single_pdf, pdf_docs)
 
     def _process_single_pdf(self, doc) -> None:
         try:
-            logger.info("Processando PDF | %s", doc.name)
+            logger.info("🚀 Processando PDF | %s", doc.name)
             raw_pages = self.pdf_extractor.extract(doc.path)
             self._process_document_pages(raw_pages, doc.name, source="pdf")
         except Exception as exc:
             logger.error("Erro no PDF %s: %s", doc.name, exc)
 
     def _process_audios(self) -> None:
-        logger.info("Iniciando ingestão de áudios")
+        # Áudios são pesados (GPU/CPU), processamos sequencialmente para evitar travamento
+        logger.info("Iniciando ingestão de áudios (Sequencial)")
         audio_docs = self.audio_loader.discover()
-        if not audio_docs:
-            logger.info("Nenhum áudio encontrado.")
-            return
+        if not audio_docs: return
         for doc in audio_docs:
             self._process_single_audio(doc)
 
     def _process_single_audio(self, doc) -> None:
         try:
-            logger.info("Processando Áudio | %s", doc.name)
+            logger.info("🎙️ Processando Áudio | %s", doc.name)
             raw_pages = self.audio_transcriber.transcribe(doc.path)
             self._process_document_pages(raw_pages, doc.name, source="audio")
         except Exception as exc:
             logger.error("Erro no áudio %s: %s", doc.name, exc)
-    
-    def _process_notes(self) -> None:
-        logger.info("Iniciando ingestão de notas pessoais")
-        notes = self.note_loader.discover()
-        if not notes:
-            logger.info("Nenhuma nota encontrada")
-            return
-        for doc in notes:
-            self._process_single_note(doc)
 
-    def _process_single_note(self, doc) -> None:
+    def _process_notes(self) -> None:
+        """
+        Ingestão Superior: Agrupa notas pequenas em documentos virtuais
+        para acelerar a extração e melhorar a síntese de conhecimento.
+        """
+        logger.info("Iniciando ingestão de notas com BATCHING VIRTUAL")
+        notes = self.note_loader.discover()
+        if not notes: return
+        
+        # Agrupamento por tamanho (ex: blocos de 4000 caracteres)
+        batches = []
+        current_batch = []
+        current_size = 0
+        
+        for doc in notes:
+            try:
+                pages = self.note_extractor.extract(doc.path)
+                text = "\n".join([p.text for p in pages])
+                
+                if current_size + len(text) > 4000 and current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_size = 0
+                
+                current_batch.append({"doc": doc, "text": text})
+                current_size += len(text)
+            except:
+                continue
+                
+        if current_batch:
+            batches.append(current_batch)
+
+        logger.info(f"Notas agrupadas em {len(batches)} documentos virtuais.")
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            executor.map(self._process_single_note_batch, batches)
+
+    def _process_single_note_batch(self, batch: List[dict]) -> None:
+        """
+        Processa um lote de notas como se fosse um único documento denso.
+        """
         try:
-            logger.info("Processando Nota | %s", doc.name)
-            raw_pages = self.note_extractor.extract(doc.path)
-            self._process_document_pages(raw_pages, doc.name, source="note")
+            combined_text = "\n\n---\n\n".join([item["text"] for item in batch])
+            doc_names = ", ".join([item["doc"].name for item in batch])
+            
+            logger.info(f"📝 Ingerindo Lote de Notas: [{doc_names[:50]}...]")
+            
+            # Cria páginas virtuais a partir do texto combinado
+            virtual_pages = [PageText(page_number=1, text=combined_text, char_count=len(combined_text))]
+            
+            self._process_document_pages(virtual_pages, f"Batch_{batch[0]['doc'].name}", source="note_batch")
         except Exception as exc:
-            logger.error("Erro na nota %s: %s", doc.name, exc)
+            logger.error(f"Erro no lote de notas: {exc}")
 
     # =====================================================
     # Lógica Central de Processamento de Documento
@@ -183,29 +234,84 @@ class IngestionPipeline:
             logger.warning(f"Nenhum chunk gerado para o documento {doc_name}.")
             return
 
-        # --- Etapa 2: Extração de Grafo de Conhecimento em Lotes ---
-        logger.info(f"Iniciando extração de entidades em lotes para {len(chunks)} chunks...")
+        # --- Etapa 2: Extração de Grafo de Conhecimento (Baseado em Páginas) ---
+        # OTIMIZAÇÃO: Extraímos do texto da página inteira para ter mais contexto e menos chamadas ao LLM.
+        logger.info(f"Iniciando extração de grafo para {len(cleaned_pages)} páginas de {doc_name}...")
         
-        # BATCHING: Agrupamos 3 chunks para economizar chamadas
-        batch_size = 3
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            combined_text = "\n\n".join([c.text for c in batch])
-            
-            logger.info(f"Processando lote {i//batch_size + 1} de {len(chunks)//batch_size + (1 if len(chunks)%batch_size != 0 else 0)} para {doc_name}...")
-            
-            # Chamada direta (sem threads paralelas para evitar o 429)
-            self._process_entities(combined_text, doc_name, batch[0].page_number)
-            
-            # Pausa obrigatória de 5 segundos (Cota Free do Gemini)
-            time.sleep(5)
+        # Agrupamos páginas para extração semântica com SOBREPOSIÇÃO (Overlap)
+        # Isso garante que relações entre o fim de uma página e o início da outra não se percam.
+        extraction_batches = []
+        current_text = ""
+        current_page = 1
+        overlap_size = 500 # Caracteres de sobreposição técnica
+        
+        for p in cleaned_pages:
+            # Reduzimos para 3000 para aumentar a precisão do Llama 3.1 (Menos é Mais)
+            if len(current_text) + len(p.text) < 3000: 
+                current_text += "\n" + p.text
+            else:
+                if current_text:
+                    extraction_batches.append((current_text, doc_name, current_page, len(extraction_batches) + 1))
+                
+                # Mantém o final do texto anterior como contexto para o próximo bloco
+                context_overlap = current_text[-overlap_size:] if len(current_text) > overlap_size else current_text
+                current_text = context_overlap + "\n" + p.text
+                current_page = p.page_number
+        
+        if current_text:
+            extraction_batches.append((current_text, doc_name, current_page, len(extraction_batches) + 1))
 
-        # --- Etapa 3: Indexação Vetorial (RAG) ---
+        total_batches = len(extraction_batches)
+        
+        # --- SISTEMA DE CHECKPOINT (SAVE STATE) ---
+        progress_file = Path("data/ingestion_progress.json")
+        processed_batches = {}
+        if progress_file.exists():
+            try:
+                with open(progress_file, "r", encoding="utf-8") as f:
+                    processed_batches = json.load(f)
+            except:
+                pass
+                
+        if doc_name not in processed_batches:
+            processed_batches[doc_name] = []
+        
+        # PROCESSAMENTO PARALELO (Otimizado para a capacidade da GPU/Ollama)
+        with ThreadPoolExecutor(max_workers=2) as executor: # Reduzido para 2 para evitar concorrência excessiva na GPU
+            futures = []
+            for text, d_name, p_num, b_num in extraction_batches:
+                if b_num in processed_batches[doc_name]:
+                    logger.info(f"⏭️ Pulando lote {b_num}/{total_batches} (Cache)")
+                    continue
+                    
+                future = executor.submit(self._process_entities_with_progress, text, d_name, p_num, b_num, progress_file, processed_batches)
+                futures.append(future)
+            
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"❌ Falha crítica no worker de extração: {e}", exc_info=True)
+
+        # --- Etapa 3: Indexação Vetorial (RAG - Chunks de Precisão) ---
+        # Mantemos os chunks menores (800 chars) para garantir que a busca encontre o trecho exato.
         logger.info(f"Iniciando indexação vetorial para {len(chunks)} chunks...")
         embedded_chunks = self.embedder.embed_chunks(chunks)
         self.vector_store.upsert_embeddings(embedded_chunks)
         
         logger.info(f"'{doc_name}' ({source}) concluído com sucesso.")
+
+    def _process_entities_with_progress(self, text: str, doc_name: str, page_number: int, b_num: int, progress_file: Path, processed_batches: dict) -> None:
+        """
+        Wrapper que executa a extração e salva o progresso imediatamente após o sucesso.
+        """
+        self._process_entities(text, doc_name, page_number)
+        
+        # Salva o checkpoint (Thread-safe simples via append na memória e dump)
+        if b_num not in processed_batches[doc_name]:
+            processed_batches[doc_name].append(b_num)
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(processed_batches, f)
 
     def _process_entities(self, text: str, doc_name: str, page_number: int) -> None:
         """
@@ -214,8 +320,6 @@ class IngestionPipeline:
         if not text.strip():
             return
 
-        import time
-        time.sleep(4)
         # 1. Extração semântica via LLM
         # Aqui o LLM trabalha pesado
         graph = self.entity_extractor.extract_graph(text)
@@ -244,18 +348,14 @@ def main():
     KNOWLEDGE_BASE_NAME = "alana_knowledge_base"
     WHISPER_MODEL = "small"
     EMBEDDER_DEVICE = "cuda"  # ou "cuda"
-    EXTRACTION_MODEL = "models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+    EXTRACTION_MODEL = "ollama/llama3.1"
 
     # Verifica se o diretório de dados brutos existe
     if not Path(RAW_DATA_DIR).is_dir():
         logger.error(f"Diretório de dados brutos '{RAW_DATA_DIR}' não encontrado. Crie-o e adicione seus arquivos lá.")
         sys.exit(1)
         
-    # Verifica se o modelo de extração existe
-    if not Path(EXTRACTION_MODEL).is_file():
-        logger.error(f"Modelo de extração '{EXTRACTION_MODEL}' não encontrado. Verifique o caminho.")
-        # Opcional: Adicionar link/instrução de como baixar o modelo.
-        sys.exit(1)
+    # Removido verificação de modelo local, pois o LLMEngine agora utiliza litellm com Gemini
 
     pipeline = IngestionPipeline(
         raw_dir=RAW_DATA_DIR,
