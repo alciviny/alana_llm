@@ -1,137 +1,107 @@
 import logging
 import threading
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, UploadFile, File
+import shutil
+import uuid
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFile, File, Query, Request
 from pydantic import BaseModel
 from pathlib import Path
-from run_ingestion import IngestionPipeline
-from alana_system.api.dependencies import get_embedder, get_llm_engine, get_vector_store, get_transcriber
+from typing import List, Optional, Dict, Any
 
-logger = logging.getLogger(__name__)
-router = APIRouter(tags=["Ingestion"])
+from alana_system.api.dependencies import get_embedder, get_llm_engine, get_vector_store, get_graph_store
+from alana_system.ingestion.manager import IngestionManager
 
-# Limite de concorrência para ingestão (evita travar CPU/GPU)
+logger = logging.getLogger("alana.api.ingestion")
+router = APIRouter(tags=["Ingestion"], prefix="/ingestion")
+
+# Limite de concorrência para proteger CPU/GPU local
 ingestion_semaphore = threading.Semaphore(2)
 
-class ProcessDocumentRequest(BaseModel):
+class ProcessPathRequest(BaseModel):
     path: str
-    type: str
+    namespace: str = "global"
 
-def _run_ingestion_task(pipeline, doc, doc_type):
-    """Função auxiliar para rodar em segundo plano."""
+def _background_ingestion_task(file_path: Path, namespace: str, app_state: Any):
+    """Executa a ingestão industrial em segundo plano."""
     try:
-        if doc_type == "PDF":
-            pipeline._process_single_pdf(doc)
-        elif doc_type == "AUDIO":
-            pipeline._process_single_audio(doc)
-        elif doc_type == "NOTE":
-            pipeline._process_single_note(doc)
-        logger.info(f"✅ Ingestão concluída para {doc.name}")
+        from alana_system.memory.intelligence import GraphIntelligence
+        intelligence = GraphIntelligence(graph_store=app_state.graph_store, llm_engine=app_state.llm_engine)
+        
+        manager = IngestionManager(
+            graph_store=app_state.graph_store,
+            vector_store=app_state.vector_store,
+            intelligence=intelligence,
+            embedder=app_state.embedder
+        )
+        
+        logger.info(f"⚙️ [Background] Processando: {file_path.name} no namespace '{namespace}'")
+        
+        # Processamos o arquivo específico
+        manager.process_file(str(file_path), namespace=namespace)
+        
+        logger.info(f"✅ [Background] Concluído: {file_path.name}")
+    except Exception as e:
+        logger.error(f"❌ [Background] Falha em {file_path.name}: {e}", exc_info=True)
     finally:
-        # Libera o semáforo quando terminar
         ingestion_semaphore.release()
 
-@router.post("/upload/")
+@router.post("/upload")
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    embedder=Depends(get_embedder),
-    llm=Depends(get_llm_engine),
-    vector_store=Depends(get_vector_store),
-    transcriber=Depends(get_transcriber)
+    namespace: str = Query("global", description="O projeto onde o arquivo sera guardado")
 ):
-    # Respeita o semáforo de processamento
+    """Recebe um arquivo e agenda o processamento industrial assíncrono."""
     if not ingestion_semaphore.acquire(blocking=False):
         raise HTTPException(status_code=503, detail="Servidor ocupado. Tente novamente em instantes.")
 
     try:
-        # Garante que a pasta de uploads existe
-        upload_dir = Path("data/uploads")
+        upload_dir = Path("data/uploads") / namespace
         upload_dir.mkdir(parents=True, exist_ok=True)
         
         file_path = upload_dir / file.filename
         with open(file_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024): # 1MB por vez
-                f.write(chunk)
+            shutil.copyfileobj(file.file, f)
 
-        pipeline = IngestionPipeline(
-            raw_dir=None,
-            collection_name="alana_knowledge_base",
-            embedder=embedder,
-            llm=llm,
-            vector_store=vector_store,
-            audio_transcriber=transcriber
-        )
-
-        class MockDoc:
-            def __init__(self, name, path):
-                self.name = name
-                self.path = path
-        
-        doc = MockDoc(file.filename, file_path)
-        
-        # Detecta tipo pelo nome do arquivo
-        ext = file.filename.split('.')[-1].upper()
-        doc_type = "PDF" if ext == "PDF" else "AUDIO" if ext in ["MP3", "WAV", "M4A"] else "NOTE"
-
-        background_tasks.add_task(_run_ingestion_task, pipeline, doc, doc_type)
+        # Agenda tarefa em background
+        background_tasks.add_task(_background_ingestion_task, file_path, namespace, request.app.state)
 
         return {
             "status": "processing",
-            "message": f"Arquivo {file.filename} recebido. A Alana está analisando agora."
+            "message": f"Arquivo '{file.filename}' recebido. Processando em segundo plano no namespace '{namespace}'.",
+            "namespace": namespace
         }
     except Exception as e:
         ingestion_semaphore.release()
-        logger.error(f"❌ Erro no upload: {str(e)}")
+        logger.error(f"❌ Erro no upload: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/process_document")
-async def process_document(
-    request: ProcessDocumentRequest,
-    background_tasks: BackgroundTasks,
-    embedder=Depends(get_embedder),
-    llm=Depends(get_llm_engine),
-    vector_store=Depends(get_vector_store),
-    transcriber=Depends(get_transcriber)
+@router.post("/process-path")
+async def process_local_path(
+    request: Request,
+    request_data: ProcessPathRequest,
+    background_tasks: BackgroundTasks
 ):
-    # Tenta adquirir o semáforo sem bloquear
+    """Processa uma pasta local ja existente no servidor."""
     if not ingestion_semaphore.acquire(blocking=False):
-        logger.warning("⚠️ Servidor ocupado. Rejeitando pedido de ingestão.")
-        raise HTTPException(
-            status_code=503, 
-            detail="Servidor ocupado processando outros documentos. Tente novamente em instantes."
-        )
+        raise HTTPException(status_code=503, detail="Servidor ocupado.")
 
-    try:
-        pipeline = IngestionPipeline(
-            raw_dir=None,
-            collection_name="alana_knowledge_base",
-            embedder=embedder,
-            llm=llm,
-            vector_store=vector_store,
-            audio_transcriber=transcriber
-        )
-        
-        doc_path = Path(request.path)
-        if not doc_path.exists():
-            raise FileNotFoundError(f"Arquivo não encontrado: {request.path}")
-            
-        class MockDoc:
-            def __init__(self, name, path):
-                self.name = name
-                self.path = path
-        
-        doc = MockDoc(doc_path.name, doc_path)
-        doc_type = request.type.upper()
-        
-        # Adiciona a tarefa para o background do FastAPI
-        background_tasks.add_task(_run_ingestion_task, pipeline, doc, doc_type)
-            
-        return {
-            "status": "processing", 
-            "message": f"Documento {doc.name} enviado para processamento em segundo plano."
-        }
-
-    except Exception as e:
+    path = Path(request_data.path)
+    if not path.exists():
         ingestion_semaphore.release()
-        logger.error(f"❌ Erro em /process_document: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=404, detail="Caminho nao encontrado.")
+
+    background_tasks.add_task(_background_ingestion_task, path, request_data.namespace, request.app.state)
+    
+    return {
+        "status": "processing",
+        "message": f"Processamento da pasta '{path.name}' agendado para o namespace '{request_data.namespace}'."
+    }
+
+@router.get("/jobs")
+async def get_ingestion_jobs(graph_store=Depends(get_graph_store)):
+    """Lista todos os trabalhos de ingestao registrados."""
+    try:
+        return {"jobs": graph_store.get_all_jobs()}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

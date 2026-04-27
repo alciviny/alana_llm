@@ -1,28 +1,42 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alana System | Engineering Terminal</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
+
 <body>
     <div class="app-container">
         <!-- Header -->
         <header>
-            <div class="logo">
-                <h1>Alana System</h1>
+            <div class="header-main">
+                <div class="logo">
+                    <h1>Alana System</h1>
+                </div>
+                <div class="project-selector">
+                    <label for="namespace-select">PROJETO:</label>
+                    <select id="namespace-select">
+                        <option value="global">GLOBAL</option>
+                        <option value="projeto_alfa">PROJETO ALFA</option>
+                        <option value="projeto_beta">PROJETO BETA</option>
+                    </select>
+                </div>
             </div>
             <p class="subtitle">Autonomous Engineering & Cognitive Ingestion</p>
         </header>
 
         <!-- Navigation -->
         <nav class="tabs">
-            <button class="tab-btn active" onclick="switchTab('ingestion')">Ingestão</button>
-            <button class="tab-btn" onclick="switchTab('knowledge')">Cérebro</button>
-            <button class="tab-btn" onclick="switchTab('engineering')">Missões</button>
+            <button class="tab-btn active" data-tab="ingestion">Ingestão</button>
+            <button class="tab-btn" data-tab="knowledge">Cérebro</button>
+            <button class="tab-btn" data-tab="engineering">Missões</button>
         </nav>
 
         <!-- Main Content -->
@@ -32,10 +46,11 @@
                 <div class="card">
                     <h2>Terminal de Ingestão</h2>
                     <p>Submeta documentação técnica para expansão da base de conhecimento.</p>
-                    
+
                     <div class="drop-zone" id="drop-zone">
                         <div class="icon">
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                                 <polyline points="17 8 12 3 7 8"></polyline>
                                 <line x1="12" y1="3" x2="12" y2="15"></line>
@@ -52,6 +67,16 @@
                         <p class="status-text" id="status-text">Processando dados...</p>
                     </div>
                 </div>
+
+                <!-- Lista de Processos Ativos -->
+                <div class="card" id="active-jobs-card">
+                    <h2>Fila de Processamento</h2>
+                    <p>Status atual da ingestão de documentos na base de conhecimento.</p>
+                    <div id="jobs-list" class="jobs-list">
+                        <!-- Jobs serão renderizados aqui pelo app.js -->
+                        <div class="empty-jobs">Nenhum processo ativo no momento.</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Knowledge Tab -->
@@ -59,8 +84,12 @@
                 <div class="card graph-card">
                     <div class="card-header">
                         <h2>Grafo de Conhecimento Neural</h2>
-                        <button class="refresh-btn" onclick="loadGraph()">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                        <button class="refresh-btn" id="refresh-graph-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
                         </button>
                     </div>
                     <p>Mapeamento dinâmico de entidades e relações extraídas via IA.</p>
@@ -68,52 +97,74 @@
                 </div>
             </div>
 
-            <!-- Engineering Tab -->
+            <!-- Mission Tab -->
             <div id="engineering-tab" class="tab-content">
-                <div class="card">
-                    <h2>Operações de Engenharia</h2>
-                    <p>Defina objetivos complexos para execução autônoma em ambiente controlado.</p>
-                    
-                    <div class="input-group">
-                        <textarea id="mission-input" placeholder="Defina a missão técnica..."></textarea>
-                        <button id="run-mission-btn">Executar Missão</button>
+                <div class="agent-grid">
+                    <!-- Coluna da Esquerda: Controle e Pensamentos -->
+                    <div class="agent-controls">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2>Missão Autônoma</h2>
+                                <div id="tool-indicators" class="tool-indicators">
+                                    <span class="tool-tag" id="tool-research">Pesquisa</span>
+                                    <span class="tool-tag" id="tool-simulation">Simulação</span>
+                                    <span class="tool-tag" id="tool-graph">Grafo</span>
+                                </div>
+                            </div>
+                            <p>Defina o objetivo técnico para a Alana iniciar o ciclo de engenharia.</p>
+                            <div class="input-group">
+                                <textarea id="mission-input"
+                                    placeholder="Ex: Analise a estabilidade térmica deste circuito e simule uma falha no capacitor de entrada..."></textarea>
+                                <button id="run-mission-btn">INICIAR MISSÃO</button>
+                            </div>
+                        </div>
+
+                        <div id="agent-display" class="agent-display hidden">
+                            <div class="thought-bubble">
+                                <div class="bubble-header">Cérebro (Processamento Interno)</div>
+                                <div id="agent-thought">Aguardando sinal...</div>
+                            </div>
+
+                            <div class="critique-bubble">
+                                <div class="bubble-header">Reflexão Crítica</div>
+                                <div id="agent-critique">Analisando consistência dos dados...</div>
+                            </div>
+
+                            <div class="terminal-container">
+                                <div class="terminal-header">
+                                    <div class="title">Console de Engenharia</div>
+                                </div>
+                                <div id="agent-terminal"></div>
+                            </div>
+
+                            <!-- Painel de Aprovação -->
+                            <div id="approval-panel" class="approval-panel hidden">
+                                <div class="approval-header">
+                                    <span class="status-indicator active"></span>
+                                    <h3>Autorização Necessária</h3>
+                                </div>
+                                <p id="approval-text">A Alana solicita permissão para executar uma ação crítica.</p>
+                                <div class="approval-actions">
+                                    <button id="approve-btn" class="btn-confirm">AUTORIZAR</button>
+                                    <button id="reject-btn" class="btn-cancel">ABORTAR</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- Agent Display -->
-                    <div class="agent-display hidden" id="agent-display">
-                        <div class="thought-bubble">
-                            <div class="bubble-header">Raciocínio Lógico</div>
-                            <p id="agent-thought">Aguardando inicialização...</p>
-                        </div>
-
-                        <div class="thought-bubble critique-bubble">
-                            <div class="bubble-header">Reflexão Crítica</div>
-                            <p id="agent-critique">Analisando possíveis falhas...</p>
-                        </div>
-
-                        <div class="terminal-container">
-                            <div class="terminal-header">
-                                <div class="title">Console de Execução</div>
-                            </div>
-                            <pre id="agent-terminal">IDLE</pre>
-                        </div>
-
-                        <!-- Approval Panel -->
-                        <div id="approval-panel" class="approval-panel hidden">
-                            <div class="approval-header">
-                                <span class="warning-icon">⚠</span>
-                                <h3>Autorização de Segurança Necessária</h3>
-                            </div>
-                            <p id="approval-text">O agente solicita permissão para executar uma ação de alto impacto.</p>
-                            <div class="approval-actions">
-                                <button id="approve-btn" class="btn-confirm">APROVAR EXECUÇÃO</button>
-                                <button id="reject-btn" class="btn-cancel">ABORTAR</button>
+                    <!-- Coluna da Direita: Artefatos e Resultados -->
+                    <div class="agent-artifacts">
+                        <div class="card artifact-card">
+                            <h2>Laboratório e Resultados</h2>
+                            <p>Arquivos, gráficos e relatórios gerados durante a missão.</p>
+                            <div id="artifact-gallery" class="artifact-gallery">
+                                <div class="empty-artifacts">Nenhum artefato gerado nesta sessão.</div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Messages -->
             <div class="message-box hidden" id="message-box">
                 <p id="message-text"></p>
@@ -121,12 +172,15 @@
 
             <!-- Monitor -->
             <div class="log-console" id="log-console">
-                <h3><div class="status-indicator active"></div>Monitor do Sistema</h3>
+                <h3>
+                    <div class="status-indicator active"></div>Monitor do Sistema
+                </h3>
                 <pre id="log-text">Aguardando telemetria...</pre>
             </div>
         </main>
     </div>
 
-    <script src="app.js"></script>
+    <script type="module" src="/src/main.ts"></script>
 </body>
+
 </html>

@@ -2,58 +2,67 @@ import logging
 import json
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from alana_system.agent.core.engine import AgentEngine
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("alana.api.agent")
 router = APIRouter(tags=["Agent"])
 
 @router.websocket("/ws/agent")
 async def agent_websocket(websocket: WebSocket):
+    """
+    Interface de comunicacao em tempo real para o Agente Autonomo (Expert Lab).
+    Suporta isolamento por namespace e controle de missao.
+    """
     await websocket.accept()
-    logger.info("🔌 WebSocket Agent conectado (Motor Industrial)")
+    logger.info("🔌 WebSocket Agent Conectado")
     
-    query_engine = websocket.app.state.query_engine
-    
-    # Inicializa o Motor Industrial com acesso à Memória Híbrida
-    engine = AgentEngine(query_engine=query_engine)
-    
-    # Fila para receber aprovações do frontend
+    orchestrator = websocket.app.state.orchestrator
     approval_queue = asyncio.Queue()
+    current_mission_task = None
 
     async def stream_event(event_type: str, data: dict):
+        """Envia eventos de pensamento e acao para o frontend."""
         try:
-            # Garante que o formato seja compatível com o frontend
-            await websocket.send_json({"type": event_type, "data": data})
-        except Exception as e:
-            logger.error(f"Erro ao enviar evento: {e}")
-
-    async def approval_callback(prompt: str) -> bool:
-        """Chamado pela Alana quando precisa de autorização do humano."""
-        logger.info(f"🚦 Aguardando autorização: {prompt}")
-        while not approval_queue.empty(): approval_queue.get_nowait()
-        decision = await approval_queue.get()
-        return decision == "approve"
+            if websocket.client_state.value == 1: # Connected
+                await websocket.send_json({"type": event_type, "data": data})
+        except Exception:
+            pass
 
     try:
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
             
+            # Comando de Missao: { "mission": "...", "namespace": "projeto_x" }
             if "mission" in message:
                 mission = message.get("mission")
-                logger.info(f"🎯 Nova Missão Industrial: {mission}")
-                asyncio.create_task(engine.run_mission(
-                    mission, 
-                    event_callback=stream_event, 
-                    approval_callback=approval_callback
-                ))
+                namespace = message.get("namespace", "global")
+                
+                # Cancela missao anterior se houver
+                if current_mission_task and not current_mission_task.done():
+                    current_mission_task.cancel()
+                    logger.info("🛑 Missao anterior abortada.")
+
+                logger.info(f"🎯 Nova Missao [{namespace}]: {mission}")
+                
+                # Dispara o Orquestrador Industrial
+                current_mission_task = asyncio.create_task(
+                    orchestrator.run_complex_mission(
+                        mission=mission, 
+                        namespace=namespace,
+                        callback=stream_event
+                    )
+                )
             
+            # Resposta de Autorizacao: { "action": "approve" }
             elif "action" in message:
                 action = message.get("action")
                 await approval_queue.put(action)
-                logger.info(f"✅ Autorização recebida: {action}")
+                logger.info(f"🚦 Autorizacao recebida: {action}")
                 
     except WebSocketDisconnect:
         logger.info("🔌 WebSocket Agent desconectado")
     except Exception as e:
-        logger.error(f"❌ Erro no WebSocket do Agente: {e}")
+        logger.error(f"❌ Falha no WebSocket do Agente: {e}")
+    finally:
+        if current_mission_task and not current_mission_task.done():
+            current_mission_task.cancel()

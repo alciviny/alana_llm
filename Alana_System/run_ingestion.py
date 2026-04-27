@@ -263,34 +263,26 @@ class IngestionPipeline:
 
         total_batches = len(extraction_batches)
         
-        # --- SISTEMA DE CHECKPOINT (SAVE STATE) ---
-        progress_file = Path("data/ingestion_progress.json")
-        processed_batches = {}
-        if progress_file.exists():
-            try:
-                with open(progress_file, "r", encoding="utf-8") as f:
-                    processed_batches = json.load(f)
-            except:
-                pass
-                
-        if doc_name not in processed_batches:
-            processed_batches[doc_name] = []
+        # --- SISTEMA DE CHECKPOINT (SAVE STATE via SQL) ---
+        self.graph_store.register_ingestion_job(doc_name, total_batches)
+        processed_batch_ids = self.graph_store.get_processed_batches(doc_name)
         
         # PROCESSAMENTO PARALELO (Otimizado para a capacidade da GPU/Ollama)
         with ThreadPoolExecutor(max_workers=2) as executor: # Reduzido para 2 para evitar concorrência excessiva na GPU
             futures = []
             for text, d_name, p_num, b_num in extraction_batches:
-                if b_num in processed_batches[doc_name]:
-                    logger.info(f"⏭️ Pulando lote {b_num}/{total_batches} (Cache)")
+                if b_num in processed_batch_ids:
+                    logger.info(f"⏭️ Pulando lote {b_num}/{total_batches} (Checkpointed no SQL)")
                     continue
                     
-                future = executor.submit(self._process_entities_with_progress, text, d_name, p_num, b_num, progress_file, processed_batches)
+                future = executor.submit(self._process_entities_with_progress, text, d_name, p_num, b_num)
                 futures.append(future)
             
             for future in as_completed(futures):
                 try:
                     future.result()
                 except Exception as e:
+                    self.graph_store.update_job_status(doc_name, "FAILED", str(e))
                     logger.error(f"❌ Falha crítica no worker de extração: {e}", exc_info=True)
 
         # --- Etapa 3: Indexação Vetorial (RAG - Chunks de Precisão) ---
@@ -301,17 +293,17 @@ class IngestionPipeline:
         
         logger.info(f"'{doc_name}' ({source}) concluído com sucesso.")
 
-    def _process_entities_with_progress(self, text: str, doc_name: str, page_number: int, b_num: int, progress_file: Path, processed_batches: dict) -> None:
+    def _process_entities_with_progress(self, text: str, doc_name: str, page_number: int, b_num: int) -> None:
         """
-        Wrapper que executa a extração e salva o progresso imediatamente após o sucesso.
+        Wrapper que executa a extração e salva o progresso imediatamente após o sucesso no SQL.
         """
-        self._process_entities(text, doc_name, page_number)
-        
-        # Salva o checkpoint (Thread-safe simples via append na memória e dump)
-        if b_num not in processed_batches[doc_name]:
-            processed_batches[doc_name].append(b_num)
-            with open(progress_file, "w", encoding="utf-8") as f:
-                json.dump(processed_batches, f)
+        try:
+            self._process_entities(text, doc_name, page_number)
+            # Salva o checkpoint atômico no banco
+            self.graph_store.mark_batch_complete(doc_name, b_num)
+        except Exception as e:
+            logger.error(f"Erro no lote {b_num} de {doc_name}: {e}")
+            raise
 
     def _process_entities(self, text: str, doc_name: str, page_number: int) -> None:
         """

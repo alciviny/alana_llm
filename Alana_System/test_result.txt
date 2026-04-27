@@ -1,0 +1,5 @@
+Este é um texto com múltiplos espaços.
+Aqui temos uma hifenização que deve ser unida.
+E aqui temos muitas quebras de linha excessivas.
+
+Fim do parágrafo.

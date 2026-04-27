@@ -51,40 +51,49 @@ class EmbeddedChunk:
 class TextEmbedder:
     """
     Embedder offline, multilíngue e memory-safe.
-
-    Projetado para:
-    - grandes volumes de documentos
-    - execução 100% offline
-    - integração posterior com FAISS / HNSW
+    Implementa o padrão Singleton para evitar recarregamento do modelo.
     """
+    _instance = None
+    _model = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(TextEmbedder, cls).__new__(cls)
+        return cls._instance
 
     def __init__(
         self,
-        # Default ajustado para português / multilíngue
         model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
         batch_size: int = 32,
         normalize: bool = True,
         device: str | None = None,
     ):
+        # Evita re-inicialização se o modelo já estiver carregado
+        if TextEmbedder._model is not None:
+            return
+
         self.batch_size = batch_size
         self.normalize = normalize
 
-        # Auto-detecção de device
         if device is None:
             if torch and torch.cuda.is_available():
                 device = "cuda"
             else:
                 device = "cpu"
+        
+        self.device = device
 
-        logger.info(
-            f"Carregando modelo de embedding | "
-            f"modelo={model_name} | device={device}"
-        )
+        logger.info(f"💾 Carregando modelo de embedding Singleton | modelo={model_name} | device={device}")
+        
+        try:
+            TextEmbedder._model = SentenceTransformer(model_name, device=device)
+        except Exception as e:
+            logger.error(f"❌ Erro ao carregar modelo de embedding: {e}")
+            raise RuntimeError("Falha crítica ao carregar motor de embeddings. Verifique sua conexão ou cache local.")
 
-        self.model = SentenceTransformer(
-            model_name,
-            device=device
-        )
+    @property
+    def model(self):
+        return TextEmbedder._model
 
     # --------------------------------------------------------
 

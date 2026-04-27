@@ -1,66 +1,81 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict
 
 from alana_system.api.dependencies import get_llm_engine, get_query_engine, get_embedder
 from alana_system.inference.llm_engine import LLMEngine
 from alana_system.query.query_engine import QueryEngine
-from alana_system.embeddings.embedder import TextEmbedder
 
-logger = logging.getLogger(__name__)
-router = APIRouter(tags=["Chat & Inference"])
+logger = logging.getLogger("alana.api.chat")
+router = APIRouter(tags=["Chat & Reasoning"])
 
-class QueryRequest(BaseModel):
+class ChatRequest(BaseModel):
     query: str
-    context_override: Optional[str] = None
+    namespace: str = "global"
     stream: bool = False
-
-class EmbedRequest(BaseModel):
-    text: str
+    context_override: Optional[str] = None
 
 @router.post("/generate")
-async def generate(
-    request: QueryRequest, 
-    llm_engine: LLMEngine = Depends(get_llm_engine),
+async def chat_endpoint(
+    request: ChatRequest,
+    llm: LLMEngine = Depends(get_llm_engine),
     query_engine: QueryEngine = Depends(get_query_engine)
 ):
-    if request.stream:
-        raise HTTPException(status_code=400, detail="Streaming ainda não suportado.")
-
+    """
+    Endpoint principal de chat com suporte a RAG (Knowledge Graph + Vetores) e Streaming.
+    """
     try:
-        logger.info(f"📨 Requisição Chat: {request.query}")
-        
+        logger.info(f"📨 Chat [{request.namespace}]: {request.query}")
+
+        # Caso 1: Streaming ativado (Palavra por palavra)
+        if request.stream:
+            # Se tiver contexto manual, usa direto o LLM
+            if request.context_override:
+                messages = [{"role": "user", "content": f"Contexto: {request.context_override}\n\nPergunta: {request.query}"}]
+                generator = llm.generate_answer(messages, stream=True)
+            else:
+                # Caso contrario, usa o QueryEngine para buscar conhecimento
+                # TODO: Implementar stream no QueryEngine. Por enquanto, stream no LLM direto.
+                messages = [{"role": "user", "content": request.query}]
+                generator = llm.generate_answer(messages, stream=True)
+            
+            return StreamingResponse(generator, media_type="text/plain")
+
+        # Caso 2: Resposta Completa (Normal)
         if request.context_override:
-            # Rodar em threadpool para não travar o event loop
-            answer = await run_in_threadpool(
-                llm_engine.generate_answer, 
-                query=request.query, 
-                context_text=request.context_override
-            )
+            # Usa o LLM direto com o contexto fornecido
+            messages = [{"role": "user", "content": f"Contexto: {request.context_override}\n\nPergunta: {request.query}"}]
+            answer = await run_in_threadpool(llm.generate_answer, messages)
         else:
-            # Rodar em threadpool para não travar o event loop
+            # Usa o QueryEngine Industrial (Busca em Grafos + Vetores)
             answer = await run_in_threadpool(
                 query_engine.answer_query, 
-                request.query
+                request.query, 
+                namespace=request.namespace
             )
-        
-        return {"query": request.query, "answer": answer, "status": "success"}
+
+        return {
+            "query": request.query,
+            "answer": answer,
+            "namespace": request.namespace,
+            "status": "success"
+        }
+
     except Exception as e:
-        logger.error("❌ Erro em /generate", exc_info=True)
-        raise HTTPException(status_code=500, detail="Erro interno na geração.")
+        logger.error(f"💥 Erro no chat: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/embed")
-async def embed(
-    request: EmbedRequest, 
-    embedder: TextEmbedder = Depends(get_embedder)
+async def embed_text(
+    text: str = Query(..., description="Texto para converter em vetor"),
+    embedder=Depends(get_embedder)
 ):
+    """Converte um texto em vetor (Embedding)."""
     try:
-        vector = await run_in_threadpool(embedder.embed_query, request.text)
-        if hasattr(vector, "tolist"):
-            vector = vector.tolist()
-        return {"vector": vector}
+        vector = embedder.embed_query(text)
+        return {"vector": vector.tolist() if hasattr(vector, "tolist") else vector}
     except Exception as e:
-        logger.error("❌ Erro em /embed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Erro ao gerar embedding.")
+        raise HTTPException(status_code=500, detail=str(e))

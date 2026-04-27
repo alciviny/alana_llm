@@ -1,170 +1,93 @@
 import logging
 import time
-from typing import Optional, List, Dict, Any
-
+import json
+from typing import Optional, List, Dict, Any, Generator
 from litellm import completion
-try:
-    import tiktoken
-    tokenizer = tiktoken.get_encoding("cl100k_base")
-except ImportError:
-    tokenizer = None
 
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger("alana.inference.engine")
 
 class LLMEngine:
     """
-    Engine de LLM Híbrida e Ultrarrápida.
-
-    Primário: Gemini 1.5 Flash (rápido e barato)
-    Fallback: Grok (reserva automática)
-
-    Suporta:
-    - Prompt clássico (query + contexto)
-    - Chat-style (messages)
-    - Fallback automático
-    - Controle simples por metadata
+    Engine de Inferência Unificada da Alana.
+    Otimizada para Ollama Local com suporte a Streaming e Retentativas.
     """
 
     def __init__(
         self,
-        model_path: Optional[str] = None,
+        default_model: str = "ollama/llama3.1",
         context_window: int = 8192,
-        model_priority: Optional[List[str]] = None,
+        base_url: Optional[str] = None # Para apontar para o Ollama se necessário
     ):
         import os
+        self.model = os.getenv("DEFAULT_MODEL", default_model)
         self.context_window = context_window
+        self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         
-        # Carrega o modelo do .env
-        default_model = os.getenv("DEFAULT_MODEL", "ollama/llama3.1")
-        
-        # Se for um modelo OLLAMA, desativamos fallbacks externos por segurança (Offline Focus)
-        if "ollama" in default_model.lower():
-            self.model_priority = [default_model]
-            logger.info(f"🏠 MODO OFFLINE ATIVADO: Usando apenas {default_model}")
-        else:
-            self.model_priority = model_priority or [default_model]
-
-        self.model_path = model_path
-        logger.info(f"🚀 LLMEngine Pronta | Foco: {self.model_priority[0]}")
-
-    # =========================
-    # Utilitários internos
-    # =========================
-
-    def _truncate_context(self, text: Optional[str]) -> str:
-        """
-        Garante que o contexto não ultrapasse o limite de tokens definido.
-        Usa tiktoken para precisão ou fallback para estimativa de caracteres.
-        """
-        if not text:
-            return ""
-            
-        if tokenizer:
-            tokens = tokenizer.encode(text)
-            if len(tokens) > self.context_window:
-                logger.warning(f"⚠️ Contexto truncado de {len(tokens)} para {self.context_window} tokens.")
-                return tokenizer.decode(tokens[: self.context_window])
-            return text
-        else:
-            # Fallback: 1 token ~= 4 caracteres (estimativa conservadora)
-            char_limit = self.context_window * 4
-            return text[:char_limit]
-
-    def _build_prompt(
-        self,
-        query: str,
-        context_text: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """
-        Constrói um prompt controlado, simples e previsível.
-        """
-        metadata = metadata or {}
-
-        role = metadata.get("role", "assistente de IA")
-        style = metadata.get("style", "direta e concisa")
-
-        context_text = self._truncate_context(context_text)
-
-        prompt = f"""
-Você é Alana, uma {role}.
-Responda de forma {style}, utilizando exclusivamente o contexto fornecido.
-Se a resposta não estiver no contexto, diga explicitamente que não encontrou a informação.
-
-## CONTEXTO
-{context_text}
-
-## PERGUNTA
-{query}
-
-## RESPOSTA
-""".strip()
-
-        return prompt
-
-    # =========================
-    # API pública
-    # =========================
+        logger.info(f"🤖 LLMEngine Ativa | Modelo: {self.model} | Contexto: {self.context_window}")
 
     def generate_answer(
         self,
-        query: Optional[str] = None,
-        context_text: Optional[str] = None,
-        messages: Optional[List[Dict[str, str]]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        messages: List[Dict[str, str]],
         temperature: float = 0.1,
-    ) -> str:
+        system_prompt: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        stream: bool = False
+    ) -> Any:
         """
-        Gera resposta utilizando o modelo primário com fallback automático.
+        Gera uma resposta com suporte a retentativas e modo JSON.
         """
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
 
-        # Se não vier mensagens prontas, constrói o prompt padrão
-        if not messages:
-            if not query:
-                raise ValueError("query é obrigatória quando messages não é fornecido.")
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 4096,
+            "api_base": self.base_url if "ollama" in self.model else None
+        }
 
-            prompt = self._build_prompt(query, context_text or "", metadata)
-            messages = [{"role": "user", "content": prompt}]
+        # Modo JSON nativo (Suportado pelo Ollama Llama 3)
+        if metadata and metadata.get("force_json"):
+            kwargs["response_format"] = {"type": "json_object"}
 
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                start_time = time.perf_counter()
+                
+                if stream:
+                    return self._generate_stream(kwargs)
+                
+                response = completion(**kwargs)
+                duration = time.perf_counter() - start_time
+                
+                answer = response.choices[0].message.content.strip()
+                logger.info(f"✅ LLM Sucesso | {self.model} | ⏱️ {duration:.2f}s")
+                return answer
+
+            except Exception as e:
+                logger.warning(f"⚠️ Falha na tentativa {attempt+1} do LLM: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) # Backoff exponencial
+                else:
+                    logger.error("❌ Erro crítico: Todas as tentativas de LLM falharam.")
+                    return "Desculpe, tive um problema de comunicação com o meu motor de pensamento local. Verifique se o Ollama está aberto."
+
+    def _generate_stream(self, kwargs: Dict[str, Any]) -> Generator[str, None, None]:
+        """Gerador para respostas em tempo real (Streaming)."""
         try:
-            start_time = time.perf_counter()
-            
-            # Prepara argumentos dinâmicos para suportar JSON Mode nativo
-            kwargs = {
-                "model": self.model_priority[0],
-                "messages": messages,
-                "fallbacks": self.model_priority[1:],
-                "temperature": temperature,
-            }
-            
-            # Ativa modo JSON estruturado se solicitado via metadata
-            if metadata and metadata.get("force_json", False):
-                kwargs["response_format"] = {"type": "json_object"}
-
-            # Garante fôlego para extrações técnicas longas
-            kwargs["max_tokens"] = 4096 
-            
-            # Define um timeout maior para modelos locais (paciente com o hardware)
-            kwargs["request_timeout"] = 300 # 5 minutos para processamento pesado local
-
+            kwargs["stream"] = True
             response = completion(**kwargs)
-            duration = time.perf_counter() - start_time
-
-            answer = response.choices[0].message.content.strip()
-
-            # Loga o modelo real usado (primário ou fallback)
-            used_model = getattr(response, "model", "unknown")
-            logger.info(f"✅ Resposta gerada com sucesso | Modelo usado: {used_model} | ⏱️ Tempo: {duration:.4f}s")
-
-            return answer
-
+            for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
         except Exception as e:
-            logger.error(
-                "❌ Falha crítica em todos os modelos de IA",
-                exc_info=True,
-            )
-            return (
-                "Não consegui processar a resposta devido a um erro técnico "
-                "nas APIs externas."
-            )
+            logger.error(f"❌ Erro no streaming: {e}")
+            yield " [Erro no processamento da resposta] "
+
+    def get_token_count(self, text: str) -> int:
+        """Estima contagem de tokens (Aproximação conservadora para modelos Llama)."""
+        # Sem tiktoken para modelos Llama, usamos a regra de ouro de 1 token ~= 3.5 caracteres
+        return len(text) // 3

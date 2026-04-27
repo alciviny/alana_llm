@@ -31,6 +31,15 @@ def setup_logging():
         ],
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
     )
+
+    # SILENCIAMENTO DE VERBOSIDADE (Auditoria de Elite)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("ollama").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+
     return logging.getLogger("AlanaSystem")
 
 # Configurações do App

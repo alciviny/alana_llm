@@ -26,6 +26,8 @@ from qdrant_client.models import (
     Distance,
     PointStruct,
     Filter,
+    FieldCondition,
+    MatchValue,
 )
 
 from ..embeddings.embedder import EmbeddedChunk
@@ -77,6 +79,10 @@ class VectorStore:
         )
         self.create_payload_index(
             field_name="file_name",
+            field_type="keyword"
+        )
+        self.create_payload_index(
+            field_name="namespace",
             field_type="keyword"
         )
 
@@ -140,6 +146,7 @@ class VectorStore:
     def upsert_embeddings(
         self,
         chunks: List[EmbeddedChunk],
+        namespace: str = "global",
         batch_size: int = 100,
     ) -> None:
         """
@@ -186,6 +193,7 @@ class VectorStore:
                     "page_number": chunk.page_number,
                     "text": chunk.text,
                     "file_name": chunk.source_name,
+                    "namespace": namespace,
                 }
 
                 points.append(
@@ -215,13 +223,30 @@ class VectorStore:
         self,
         query_vector: np.ndarray,
         top_k: int = 5,
+        namespace: Optional[str] = None,
         filters: Optional[Filter] = None,
         score_threshold: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """
-        Busca semântica por similaridade vetorial.
-        Retorna texto, score e metadados.
+        Busca semântica por similaridade vetorial com suporte a filtro de namespace.
         """
+        # Se um namespace for fornecido, cria um filtro de metadados
+        if namespace:
+            namespace_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="namespace",
+                        match=MatchValue(value=namespace)
+                    )
+                ]
+            )
+            # Mescla com filtros existentes se houver
+            if filters:
+                if not filters.must:
+                    filters.must = []
+                filters.must.extend(namespace_filter.must)
+            else:
+                filters = namespace_filter
         # Validação de dimensão
         if len(query_vector) != self.vector_dim:
             raise ValueError(
@@ -230,24 +255,38 @@ class VectorStore:
                 f"recebido={len(query_vector)}"
             )
 
-        # Usando o método padrão search da qdrant_client
-        results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector.tolist(),
-            limit=top_k,
-            query_filter=filters,
-            score_threshold=score_threshold,
-        )
+        # Usando a API moderna query_points do Qdrant (compatível com 1.17+)
+        try:
+            results = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector.tolist(),
+                limit=top_k,
+                query_filter=filters,
+                score_threshold=score_threshold,
+            ).points
+        except AttributeError:
+            # Fallback para versões que ainda usam search
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector.tolist(),
+                limit=top_k,
+                query_filter=filters,
+                score_threshold=score_threshold,
+            )
 
         response_list: List[Dict[str, Any]] = []
         for r in results:
+            # Normaliza o acesso dependendo do formato de retorno (ScoredPoint ou ScoredPointQueryResult)
+            payload = getattr(r, "payload", {})
+            score = getattr(r, "score", 0.0)
+            
             response_list.append(
                 {
-                    "score": r.score,
-                    "chunk_id": r.payload.get("original_id"),
-                    "page_number": r.payload.get("page_number"),
-                    "text": r.payload.get("text"),
-                    "file_name": r.payload.get("file_name"),
+                    "score": score,
+                    "chunk_id": payload.get("original_id"),
+                    "page_number": payload.get("page_number"),
+                    "text": payload.get("text"),
+                    "file_name": payload.get("file_name"),
                 }
             )
 

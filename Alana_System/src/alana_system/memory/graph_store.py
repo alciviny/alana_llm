@@ -1,36 +1,46 @@
 import sqlite3
 import logging
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
 from alana_system.preprocessing.entity_extractor import KnowledgeGraphSchema
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("alana.memory.graph")
 
 class GraphStore:
+    """
+    Motor de Armazenamento em Grafo (SQLite).
+    Gerencia entidades, relacoes, aliases e jobs de ingestao com foco em integridade industrial.
+    """
     def __init__(self, db_path: str = "data/memory/alana_graph.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self):
-        # Timeout de 20 segundos para aguardar locks serem liberados
-        # Timeout de 60 segundos para evitar I/O errors no Windows/Docker
-        conn = sqlite3.connect(self.db_path, timeout=60.0)
-        conn.row_factory = sqlite3.Row
-        
-        # Ativa o modo WAL (Write-Ahead Logging) para alta concorrência
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;") # Otimiza performance mantendo segurança
-        
-        return conn
+        """Cria uma conexao robusta com timeout e modo de seguranca para Windows/Docker."""
+        import time
+        for attempt in range(3):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=60.0)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=TRUNCATE;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                return conn
+            except sqlite3.OperationalError as e:
+                if "disk I/O error" in str(e).lower() and attempt < 2:
+                    time.sleep(1)
+                    continue
+                raise
 
     def _init_db(self) -> None:
-        """Cria tabelas e índices se não existirem."""
+        """Inicializa o esquema do banco de dados industrial."""
         with self._connect() as conn:
             cursor = conn.cursor()
+            # Tabela de Entidades
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS entities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +49,7 @@ class GraphStore:
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Tabela de Relacoes (Core do Grafo)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS relations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,12 +58,20 @@ class GraphStore:
                     object TEXT NOT NULL,
                     source_doc TEXT,
                     page_number INTEGER,
+                    namespace TEXT DEFAULT 'global',
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(subject, relation, object, source_doc)
+                    UNIQUE(subject, relation, object, source_doc, namespace)
                 )
             """)
             
-            # Nova tabela para resolver sinônimos (ex: "EUA" -> "Estados Unidos")
+            # Auto-Migracao Industrial: Garante que a coluna namespace existe em instalacoes antigas
+            try:
+                cursor.execute("SELECT namespace FROM relations LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("🔧 Migrando banco de dados: Adicionando coluna 'namespace'...")
+                cursor.execute("ALTER TABLE relations ADD COLUMN namespace TEXT DEFAULT 'global'")
+                conn.commit()
+            # Tabela de Sinônimos/Aliases
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS entity_aliases (
                     alias TEXT PRIMARY KEY,
@@ -60,256 +79,180 @@ class GraphStore:
                     FOREIGN KEY(canonical_name) REFERENCES entities(name)
                 )
             """)
+            # Tabela de Controle de Ingestao (Checkpoints)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ingestion_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_hash TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    namespace TEXT NOT NULL,
+                    status TEXT DEFAULT 'PENDING',
+                    total_batches INTEGER DEFAULT 0,
+                    completed_batches INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(file_hash, namespace)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_batches (
+                    file_hash TEXT,
+                    namespace TEXT,
+                    batch_number INTEGER,
+                    PRIMARY KEY(file_hash, namespace, batch_number)
+                )
+            """)
             
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_namespace ON relations(namespace)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object)")
             conn.commit()
 
-    # -------------------------------------------------
-    # Normalização e Deduplicação
-    # -------------------------------------------------
-
-    def _normalize_name(self, name: str) -> str:
-        """Normalização focada em preservar a precisão técnica e linguística."""
+    def normalize_name(self, name: str) -> str:
+        """Normalizacao focada em precisao tecnica."""
         name = name.strip()
         if not name: return ""
-        
-        # 1. Preservação de Siglas Curtas (V, I, R, AC, DC, LLM)
-        if len(name) <= 3 or name.isupper():
-            return name.upper()
-            
-        # 2. Capitalização Inteligente (evita "Lei De Ohm")
+        if len(name) <= 3 or name.isupper(): return name.upper()
         words = name.split()
         if not words: return ""
         
         normalized_words = [words[0].capitalize()]
         connectives = {"de", "da", "do", "em", "com", "para", "e", "o", "a"}
-        
         for word in words[1:]:
-            lower_word = word.lower()
-            if lower_word in connectives:
-                normalized_words.append(lower_word)
-            elif word.isupper() or (any(c.isdigit() for c in word)):
-                # Preserva palavras que já estão em caixa alta ou contém números (ex: Llama3)
-                normalized_words.append(word)
-            else:
-                normalized_words.append(word.capitalize())
-                
+            lower_w = word.lower()
+            if lower_w in connectives: normalized_words.append(lower_w)
+            elif word.isupper() or any(c.isdigit() for c in word): normalized_words.append(word)
+            else: normalized_words.append(word.capitalize())
         return " ".join(normalized_words)
 
     def _resolve_canonical_name(self, cursor, name: str) -> str:
-        """
-        Busca o nome canônico. 
-        PRECISÃO TÉCNICA: Removemos a busca por 'LIKE' que destruía conceitos específicos.
-        """
-        normalized = self._normalize_name(name)
-        
-        # 1. Busca Direta por Alias
+        """Resolve alias para nome principal."""
+        normalized = self.normalize_name(name)
         cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ?", (normalized,))
         row = cursor.fetchone()
         if row: return row["canonical_name"]
-            
-        # 2. Busca Direta por Nome Exato
         cursor.execute("SELECT name FROM entities WHERE name = ?", (normalized,))
         row = cursor.fetchone()
-        if row: return row["name"]
-        
-        # Nota: Removemos a busca por similaridade (LIKE) para evitar que "Matriz Identidade" 
-        # seja fundida erroneamente com "Matriz". Precisamos de precisão industrial.
-            
-        return normalized
+        return row["name"] if row else normalized
 
-    def add_knowledge(
-        self,
-        graph: KnowledgeGraphSchema,
-        source_doc: str,
-        page_number: int
-    ) -> None:
-        """Persiste entidades e relações com deduplicação otimizada."""
-        if not graph or (not graph.entities and not graph.relations):
-            return
-
+    def add_knowledge(self, graph: KnowledgeGraphSchema, source_doc: str, page_number: int, namespace: str = "global") -> None:
+        """Persiste um grafo completo extraído por IA."""
+        if not graph: return
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                resolved_map: Dict[str, str] = {}
-
-                # 1. Processar Entidades
-                for entity in graph.entities:
+                for entity in (graph.entities or []):
                     canonical = self._resolve_canonical_name(cursor, entity.name)
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)",
-                        (canonical, entity.type)
-                    )
-                    resolved_map[entity.name] = canonical
-
-                # 2. Processar Relações com nomes resolvidos
-                for rel in graph.relations:
-                    subj = resolved_map.get(rel.subject, self._resolve_canonical_name(cursor, rel.subject))
-                    obj = resolved_map.get(rel.object, self._resolve_canonical_name(cursor, rel.object))
-                    
-                    # GARANTIA DE DENSIDADE: Insere sujeito e objeto como entidades se não existirem
-                    # (Fallback caso a IA tenha sido preguiçosa na lista de entidades)
+                    cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (canonical, entity.type))
+                
+                for rel in (graph.relations or []):
+                    subj = self._resolve_canonical_name(cursor, rel.subject)
+                    obj = self._resolve_canonical_name(cursor, rel.object)
                     cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (subj, "Conceito"))
                     cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (obj, "Conceito"))
-
-                    cursor.execute(
-                        """INSERT OR IGNORE INTO relations 
-                           (subject, relation, object, source_doc, page_number)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (subj, rel.predicate, obj, source_doc, page_number)
-                    )
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number, namespace)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (subj, rel.predicate, obj, source_doc, page_number, namespace))
                 conn.commit()
-                logger.debug(f"Grafo persistido | doc={source_doc} page={page_number}")
-        except sqlite3.Error:
-            logger.exception("Erro ao persistir conhecimento no GraphStore")
+        except Exception as e:
+            logger.error(f"Erro ao persistir conhecimento: {e}")
 
-    # -------------------------------------------------
-    # Consulta de subgrafo
-    # -------------------------------------------------
+    def add_fact(self, subject: str, relation: str, object_name: str, source: str = "AGENT_DISCOVERY", namespace: str = "global") -> bool:
+        """Adiciona um fato unico (Agent Discoveries)."""
+        try:
+            s_norm = self.normalize_name(subject)
+            o_norm = self.normalize_name(object_name)
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (s_norm, "Entity"))
+                cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (o_norm, "Entity"))
+                cursor.execute("""
+                    INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number, namespace)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (s_norm, relation.lower(), o_norm, source, 0, namespace))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao adicionar fato: {e}")
+            return False
 
-    def infer_transitive_relations(self, max_hops: int = 2) -> int:
-        """
-        Infere relações transitivas (A -> B -> C => A -> C) usando SQL puro.
-        Muito mais rápido que processamento em Python para volumes massivos.
-        """
-        query = """
-            INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number)
-            SELECT DISTINCT r1.subject, 'inferred_transitive', r2.object, 'sql_inference', 0
-            FROM relations r1
-            JOIN relations r2 ON r1.object = r2.subject
-            WHERE r1.subject != r2.object 
-              AND r1.relation != 'inferred_transitive'
-              AND r2.relation != 'inferred_transitive'
-        """
+    def query_subgraph(self, entity_names: List[str], limit: int = 50, namespace: str = "global") -> List[Dict]:
+        """Consulta vizinhanca de 2-HOPS filtrada por namespace."""
+        if not entity_names: return []
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute(query)
-                conn.commit()
-                return cursor.rowcount
-        except sqlite3.Error:
-            logger.exception("Erro na inferência SQL")
-            return 0
-
-    def query_subgraph(
-        self,
-        entity_names: List[str],
-        limit: int = 30,
-        allowed_relations: Optional[List[str]] = None,
-    ) -> List[Dict]:
-        """
-        Recupera a vizinhança de 2-HOPS (Deep RAG) usando auto-joins.
-        Permite encontrar conexões ocultas que uma busca simples ignoraria.
-        """
-        if not entity_names:
-            return []
-
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                
-                # Placeholders para as entidades semente
                 placeholders = ", ".join(["?"] * len(entity_names))
-                
-                # Query de 2-Hops: Busca vizinhos diretos e vizinhos dos vizinhos
                 query = f"""
                     SELECT DISTINCT subject, relation, object, source_doc, page_number
-                    FROM relations
-                    WHERE subject IN ({placeholders}) OR object IN ({placeholders})
-                    UNION
-                    SELECT DISTINCT r2.subject, r2.relation, r2.object, r2.source_doc, r2.page_number
-                    FROM relations r1
-                    JOIN relations r2 ON (r1.object = r2.subject OR r1.subject = r2.object)
-                    WHERE r1.subject IN ({placeholders}) OR r1.object IN ({placeholders})
+                    FROM relations WHERE (subject IN ({placeholders}) OR object IN ({placeholders})) AND namespace = ?
+                    LIMIT ?
                 """
-                
-                if allowed_relations:
-                    rel_placeholders = ", ".join(["?"] * len(allowed_relations))
-                    query = f"SELECT * FROM ({query}) WHERE relation IN ({rel_placeholders})"
-                    # 4 sets of entity_names for the 4 IN clauses in the UNION query
-                    params = entity_names + entity_names + entity_names + entity_names + allowed_relations
-                else:
-                    # 4 sets of entity_names for the 4 IN clauses in the UNION query
-                    params = entity_names + entity_names + entity_names + entity_names
-
-                query += " LIMIT ?"
-                params.append(limit)
-
-                cursor.execute(query, params)
+                cursor.execute(query, (*entity_names, *entity_names, namespace, limit))
                 return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error:
-            logger.exception("Erro ao consultar subgrafo profundo")
+        except Exception:
             return []
 
-    def count_entities(self) -> int:
-        with self._connect() as conn:
-            return conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+    def query_subgraph_by_namespace(self, namespace: str, limit: int = 150) -> List[Dict]:
+        """Consulta relacoes e tipos em um unico JOIN (Otimizado para Dashboard)."""
+        query = """
+            SELECT r.subject, r.relation, r.object, e1.type as s_type, e2.type as o_type
+            FROM relations r
+            LEFT JOIN entities e1 ON r.subject = e1.name
+            LEFT JOIN entities e2 ON r.object = e2.name
+            WHERE r.namespace = ?
+            ORDER BY r.timestamp DESC
+            LIMIT ?
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (namespace, limit))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Erro no export de subgrafo: {e}")
+            return []
 
-    def entity_degree(self, entity_name: str) -> Dict[str, int]:
-        """Retorna grau de entrada, saída e total de uma entidade."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            name = self._resolve_canonical_name(cursor, entity_name)
-
-            out_count = cursor.execute(
-                "SELECT COUNT(*) FROM relations WHERE subject = ?", (name,)
-            ).fetchone()[0]
-
-            in_count = cursor.execute(
-                "SELECT COUNT(*) FROM relations WHERE object = ?", (name,)
-            ).fetchone()[0]
-
-            return {"in": in_count, "out": out_count, "total": in_count + out_count}
-
-    def top_hubs(self, limit: int = 10) -> List[Dict[str, int]]:
-        """Retorna entidades mais conectadas (grau por in+out)."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT subject AS entity, COUNT(*) AS out_deg FROM relations GROUP BY subject"
-            )
-            out_rows = {r[0]: r[1] for r in cursor.fetchall()}
-
-            cursor.execute(
-                "SELECT object AS entity, COUNT(*) AS in_deg FROM relations GROUP BY object"
-            )
-            in_rows = {r[0]: r[1] for r in cursor.fetchall()}
-
-            all_entities = set(out_rows.keys()) | set(in_rows.keys())
-            degrees = []
-            for e in all_entities:
-                degrees.append(
-                    {
-                        "entity": e,
-                        "in": in_rows.get(e, 0),
-                        "out": out_rows.get(e, 0),
-                        "total": in_rows.get(e, 0) + out_rows.get(e, 0),
-                    }
-                )
-
-            degrees.sort(key=lambda x: x["total"], reverse=True)
-            return degrees[:limit]
-
-    def trending_entities(self, days: int = 30, limit: int = 20) -> List[Dict[str, int]]:
-        """Retorna entidades com maior ocorrência em relações recentes."""
-        since = datetime.now() - timedelta(days=days)
-        since_str = since.strftime("%Y-%m-%d %H:%M:%S")
-
+    def top_hubs(self, limit: int = 10, namespace: str = "global") -> List[Dict]:
+        """Retorna as entidades mais conectadas do namespace."""
+        query = """
+            SELECT entity, COUNT(*) as total FROM (
+                SELECT subject as entity FROM relations WHERE namespace = ?
+                UNION ALL
+                SELECT object as entity FROM relations WHERE namespace = ?
+            ) GROUP BY entity ORDER BY total DESC LIMIT ?
+        """
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT subject AS entity FROM relations WHERE timestamp >= ? UNION ALL SELECT object AS entity FROM relations WHERE timestamp >= ?",
-                (since_str, since_str),
-            )
-            rows = cursor.fetchall()
+            cursor.execute(query, (namespace, namespace, limit))
+            return [dict(row) for row in cursor.fetchall()]
 
-            counter: Dict[str, int] = {}
-            for row in rows:
-                entity = row["entity"]
-                counter[entity] = counter.get(entity, 0) + 1
+    # --- Gestao de Jobs (Checkpoints) ---
+    def register_ingestion_job(self, file_hash: str, filename: str, total_batches: int, namespace: str = "global"):
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT INTO ingestion_jobs (file_hash, filename, total_batches, namespace, status, completed_batches, updated_at)
+                VALUES (?, ?, ?, ?, 'PENDING', 0, CURRENT_TIMESTAMP)
+                ON CONFLICT(file_hash, namespace) DO UPDATE SET status = 'PENDING', updated_at = CURRENT_TIMESTAMP
+            """, (file_hash, filename, total_batches, namespace))
+            conn.commit()
 
-            sorted_trend = sorted(counter.items(), key=lambda x: x[1], reverse=True)
-            return [{"entity": e, "count": c} for e, c in sorted_trend[:limit]]
+    def mark_batch_complete(self, file_hash: str, namespace: str, batch_number: int):
+        with self._connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO processed_batches (file_hash, namespace, batch_number) VALUES (?, ?, ?)", (file_hash, namespace, batch_number))
+            conn.execute("""
+                UPDATE ingestion_jobs SET completed_batches = (SELECT COUNT(*) FROM processed_batches WHERE file_hash = ? AND namespace = ?),
+                status = 'PROCESSING', updated_at = CURRENT_TIMESTAMP WHERE file_hash = ? AND namespace = ?
+            """, (file_hash, namespace, file_hash, namespace))
+            conn.commit()
+
+    def get_processed_batches(self, file_hash: str, namespace: str) -> List[int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT batch_number FROM processed_batches WHERE file_hash = ? AND namespace = ?", (file_hash, namespace)).fetchall()
+            return [row["batch_number"] for row in rows]
+
+    def get_all_jobs(self) -> List[Dict]:
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM ingestion_jobs ORDER BY updated_at DESC").fetchall()]

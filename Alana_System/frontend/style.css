@@ -61,6 +61,41 @@ header {
     text-transform: uppercase;
 }
 
+.header-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.project-selector {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: #050505;
+    border: 1px solid var(--border-color);
+    padding: 0.5rem 1rem;
+    border-radius: 2px;
+}
+
+.project-selector label {
+    font-size: 0.65rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-weight: 700;
+}
+
+.project-selector select {
+    background: transparent;
+    border: none;
+    color: var(--text-main);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    outline: none;
+    cursor: pointer;
+    text-transform: uppercase;
+}
+
 .subtitle {
     color: var(--text-muted);
     font-size: 0.85rem;
@@ -457,4 +492,242 @@ textarea:focus {
 
 .btn-confirm:hover, .btn-cancel:hover {
     opacity: 0.8;
+}
+
+/* Agent Command Center Grid */
+.agent-grid {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 2rem;
+    align-items: start;
+}
+
+@media (max-width: 1000px) {
+    .agent-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.tool-indicators {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.tool-tag {
+    font-size: 0.65rem;
+    padding: 0.2rem 0.5rem;
+    background: #1a1a1a;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 0.3s ease;
+}
+
+.tool-tag.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+    animation: glowPulse 2s infinite;
+}
+
+@keyframes glowPulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; }
+    100% { opacity: 0.8; }
+}
+
+/* Artifacts Gallery */
+.artifact-gallery {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 200px;
+}
+
+.artifact-item {
+    background: #0a0a0a;
+    border: 1px solid var(--border-color);
+    padding: 1rem;
+    border-radius: 2px;
+    transition: border-color 0.2s;
+}
+
+.artifact-item:hover {
+    border-color: var(--accent-muted);
+}
+
+.artifact-preview {
+    width: 100%;
+    border-radius: 2px;
+    margin-bottom: 0.75rem;
+    cursor: zoom-in;
+}
+
+.artifact-info {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    color: var(--accent-muted);
+}
+
+.empty-artifacts {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-style: italic;
+    text-align: center;
+    padding: 3rem 0;
+}
+
+/* Rich Terminal Cards */
+.terminal-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    padding: 1rem;
+    margin: 1rem 0;
+    border-left: 3px solid var(--accent);
+}
+
+.terminal-card h4 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.5rem;
+}
+
+/* Neural Trace (GraphRAG Visualization) */
+.neural-trace {
+    background: rgba(16, 185, 129, 0.05);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    padding: 1rem;
+    margin: 1rem 0;
+    border-left: 3px solid #10b981;
+}
+
+.trace-header {
+    font-size: 0.65rem;
+    color: #10b981;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    margin-bottom: 1rem;
+    font-weight: bold;
+}
+
+.trace-step {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.trace-step .node {
+    background: #1a1a1a;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    border-radius: 4px;
+}
+
+.trace-step .connector {
+    color: #10b981;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+/* Jobs Queue Styles */
+.jobs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    margin-top: 1rem;
+}
+
+.job-item {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-color);
+    padding: 1.5rem;
+    border-radius: 2px;
+    transition: transform 0.2s ease;
+}
+
+.job-item:hover {
+    border-color: var(--accent-muted);
+}
+
+.job-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.job-filename {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
+}
+
+.job-badge {
+    font-size: 0.65rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 2px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.job-badge.pending { background: #3f3f46; color: #a1a1aa; }
+.job-badge.processing { background: #3b82f6; color: #fff; animation: pulseOpacity 2s infinite; }
+.job-badge.completed { background: var(--success); color: #000; }
+.job-badge.failed { background: var(--error); color: #fff; }
+
+@keyframes pulseOpacity {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+.job-progress-container {
+    width: 100%;
+    height: 4px;
+    background: #1a1a1a;
+    margin-bottom: 0.75rem;
+}
+
+.job-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.job-footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.job-error {
+    margin-top: 1rem;
+    font-size: 0.75rem;
+    color: var(--error);
+    padding: 0.5rem;
+    background: rgba(239, 68, 68, 0.1);
+    border-left: 2px solid var(--error);
+}
+
+.empty-jobs {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+    border: 1px dashed var(--border-color);
 }

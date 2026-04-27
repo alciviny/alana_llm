@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir \
     llama-cpp-python \
     openai-whisper \
     scipy \
-    numpy
+    numpy \
+    matplotlib
 
 # --- Instala o restante das dependências ---
 COPY requirements.txt .

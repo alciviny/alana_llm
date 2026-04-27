@@ -10,12 +10,13 @@ from ..inference.llm_engine import LLMEngine
 logger = logging.getLogger(__name__)
 
 # Modelos de Esquema (Contratos Técnicos Profissionais)
-EntityType = Literal[
+EntityType = str # Flexibilidade total para não perder dados
+PREFERRED_TYPES = [
     "Conceito", "Sistema", "Equação", "Teorema", 
     "Algoritmo", "Variável", "Parâmetro", "Componente",
-    "Tecnologia", "Ferramenta", "Protocolo", "Atributo",
-    "Processo", "Evento", "Pessoa", "Organização",
-    "Sintaxe", "Diretiva", "Biblioteca", "Framework", "Paradigma"
+    "Atributo", "Processo", "Evento", "Pessoa", "Organização",
+    "Sintaxe", "Diretiva", "Biblioteca", "Framework", "Paradigma",
+    "Declaração", "Código", "Exemplo", "Hardware", "Software"
 ]
 
 # Mapa de Normalização de Tipos (Robustez Empresarial)
@@ -30,7 +31,10 @@ TYPE_MAPPING = {
     "Método": "Algoritmo",
     "Lei": "Teorema",
     "Princípio": "Teorema",
-    "Equação Matemática": "Equação"
+    "Equação Matemática": "Equação",
+    "Declaração de variável": "Variável",
+    "Declaração de Função": "Algoritmo",
+    "Snippet": "Código"
 }
 
 class EntitySchema(BaseModel):
@@ -89,14 +93,13 @@ class EntityExtractor:
             for ent_data in data.get("entities", []):
                 try:
                     # Normalização de Tipo Inteligente (Auto-Correção Empresarial)
-                    raw_type = ent_data.get("type", "")
+                    raw_type = ent_data.get("type", "Conceito")
                     
                     # 1. Resolve tipos compostos (ex: "Função/Algoritmo")
                     if "/" in raw_type:
                         parts = [p.strip() for p in raw_type.split("/")]
-                        valid_types = get_args(EntityType)
                         for part in parts:
-                            if part in valid_types or part in TYPE_MAPPING:
+                            if part in PREFERRED_TYPES or part in TYPE_MAPPING:
                                 raw_type = part
                                 break
                     
@@ -104,8 +107,10 @@ class EntityExtractor:
                     if raw_type in TYPE_MAPPING:
                         ent_data["type"] = TYPE_MAPPING[raw_type]
                     else:
-                        ent_data["type"] = raw_type
+                        # Se não for preferencial, aceitamos mas garantimos capitalização
+                        ent_data["type"] = raw_type.capitalize()
                     
+                    # Validação de dados básicos (Pydantic agora aceita qualquer string em type)
                     ent = EntitySchema(**ent_data)
                     
                     # Limpeza de nome (Remove pontuação ou fragmentos de OCR no início/fim)
@@ -115,16 +120,15 @@ class EntityExtractor:
                     if self._is_trash(ent.name): 
                         continue
                     
-                    if not self._is_useful(ent):
+                    # Permitimos descrições curtas se o nome for muito técnico/específico
+                    if not ent.description.strip() and len(ent.name) < 4:
                         continue
                     
                     if ent.name.lower() not in seen_entities:
                         valid_entities.append(ent)
                         seen_entities.add(ent.name.lower())
-                except ValidationError as ve:
-                    logger.warning(f"⚠️ Entidade inválida ignorada: {ent_data} | Erro: {ve}")
                 except Exception as e:
-                    logger.error(f"💥 Erro inesperado ao processar entidade: {e}")
+                    logger.error(f"💥 Erro ao processar entidade: {e}")
 
             # 2. Processamento de Relações
             valid_relations = []
@@ -158,30 +162,29 @@ class EntityExtractor:
             return KnowledgeGraphSchema(entities=[], relations=[])
 
     def _build_technical_prompt(self) -> str:
-        return """Você é um Engenheiro de Grafos de Conhecimento especializado em Documentação Técnica e Engenharia de Software.
-Sua missão é realizar uma EXTRAÇÃO EXAUSTIVA e ALTAMENTE CORRELACIONADA.
+        return f"""Você é um Engenheiro de Grafos de Conhecimento de ELITE.
+Sua missão é realizar uma EXTRAÇÃO GULOSA (GREEDY) e EXAUSTIVA de conhecimento técnico.
 
-ONTOLOGIA EXPANDIDA:
-- Equação/Teorema: Leis, fórmulas e princípios.
-- Algoritmo/Sintaxe: Lógica, comandos de código, estruturas de controle.
-- Diretiva/Biblioteca: Comandos de pré-processamento (#define), frameworks e libs.
-- Variável/Parâmetro: Elementos de dados e configuração.
-- Tecnologia/Paradigma: Linguagens, estilos de programação (OOP, Funcional).
-- Componente/Sistema: Módulos, hardwares ou arquiteturas.
+ONTOLOGIA DE REFERÊNCIA (Use estes ou sugira novos se necessário):
+{", ".join(PREFERRED_TYPES)}
 
-REGRAS DE DENSIDADE (MÁXIMO CONHECIMENTO):
-1. SEJA GULOSO: Extraia TODAS as entidades técnicas. Se um parágrafo menciona 10 conceitos, extraia os 10. Não resuma.
-2. RELAÇÕES LATENTES: Conecte tudo o que for logicamente relacionado. Se uma 'Diretiva' configura uma 'Variável', crie essa relação mesmo que implícita.
-3. INTEGRIDADE: Nunca corte nomes. Reconstrua nomes técnicos completos usando o contexto.
-4. ATRIBUTOS: Se algo descreve uma característica de outra coisa, use o predicado 'has_attribute' ou 'characterized_by'.
+INSTRUÇÕES DE PENSAMENTO (Chain-of-Thought):
+1. Identifique TODOS os substantivos técnicos, variáveis, funções e conceitos.
+2. Não ignore nada por parecer 'detalhe'. Detalhes são fundamentais.
+3. Se um termo aparece, ele deve ser uma entidade.
+4. Conecte as entidades com relações precisas (ex: 'define', 'implementa', 'calcula', 'depende_de').
 
-META: Transforme o texto em um mapa denso de conexões técnicas.
+REGRAS DE OURO:
+- META DE DENSIDADE: Tente extrair entre 20 a 50 entidades por bloco de texto.
+- NOMES CURTOS: 'name' deve ser o termo exato.
+- DESCRIÇÕES RICAS: Explique o papel técnico da entidade no contexto.
 
-SAÍDA JSON:
-{
-  "entities": [{"name": "Termo Completo", "type": "Tipo", "description": "Explicação técnica"}],
-  "relations": [{"subject": "A", "predicate": "relação_técnica", "object": "B"}]
-}
+FORMATO DE SAÍDA:
+{{
+  "thought": "Breve análise do conteúdo técnico detectado...",
+  "entities": [{{ "name": "...", "type": "...", "description": "..." }}],
+  "relations": [{{ "subject": "...", "predicate": "...", "object": "..." }}]
+}}
 """
 
     def _clean_entity_name(self, name: str) -> str:
