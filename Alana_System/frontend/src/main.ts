@@ -21,13 +21,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const missionInput = getEl<HTMLTextAreaElement>('mission-input');
     const agentDisplay = getEl('agent-display');
     const agentThought = getEl('agent-thought');
-    const agentCritique = getEl('agent-critique');
     const agentTerminal = getEl('agent-terminal');
     const approvalPanel = getEl('approval-panel');
     const approveBtn = getEl('approve-btn');
     const rejectBtn = getEl('reject-btn');
     const approvalText = getEl('approval-text');
-    const artifactGallery = getEl('artifact-gallery');
 
     const toolIndicators: Record<string, HTMLElement | null> = {
         'research': getEl('tool-research'),
@@ -58,10 +56,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const switchTab = (tabId: string) => {
         document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        
+
         const targetTab = getEl(`${tabId}-tab`);
         if (targetTab) targetTab.classList.add('active');
-        
+
         const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
         if (btn) btn.classList.add('active');
 
@@ -130,7 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
         progressBar.classList.remove('loading');
         dropZone.style.pointerEvents = 'auto';
         dropZone.style.opacity = '1';
-        
+
         messageBox.className = `message-box ${type}`;
         messageText.textContent = text;
         fileInput.value = '';
@@ -150,32 +148,79 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const renderJobs = (jobs: IngestionJob[]) => {
+        jobsList.innerHTML = ''; // Limpeza segura
+
         if (jobs.length === 0) {
-            jobsList.innerHTML = '<div class="empty-jobs">Nenhum processo ativo no momento.</div>';
+            const emptyDiv = document.createElement('div');
+            emptyDiv.className = 'empty-jobs';
+            emptyDiv.textContent = 'Nenhum processo ativo no momento.';
+            jobsList.appendChild(emptyDiv);
             return;
         }
 
-        jobsList.innerHTML = jobs.map(job => {
+        jobs.forEach(job => {
             const progress = job.total_batches > 0 ? Math.round((job.completed_batches / job.total_batches) * 100) : 0;
             const statusClass = job.status.toLowerCase();
-            return `
-                <div class="job-item">
-                    <div class="job-info">
-                        <span class="job-filename">${job.filename}</span>
-                        <span class="job-badge ${statusClass}">${job.status}</span>
-                    </div>
-                    <div class="job-progress-container">
-                        <div class="job-progress-bar" style="width: ${progress}%"></div>
-                    </div>
-                    <div class="job-footer">
-                        <span>${progress}% Concluído</span>
-                        <span>${job.completed_batches}/${job.total_batches} Blocos</span>
-                    </div>
-                </div>`;
-        }).join('');
+
+            const jobItem = document.createElement('div');
+            jobItem.className = 'job-item';
+
+            // Info Header
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'job-info';
+
+            const filenameSpan = document.createElement('span');
+            filenameSpan.className = 'job-filename';
+            filenameSpan.textContent = job.filename;
+
+            const badgeSpan = document.createElement('span');
+            badgeSpan.className = `job-badge ${statusClass}`;
+            badgeSpan.textContent = job.status;
+
+            infoDiv.appendChild(filenameSpan);
+            infoDiv.appendChild(badgeSpan);
+
+            // Progress Bar
+            const progressContainer = document.createElement('div');
+            progressContainer.className = 'job-progress-container';
+            const progressBarInner = document.createElement('div');
+            progressBarInner.className = 'job-progress-bar';
+            progressBarInner.style.width = `${progress}%`;
+            progressContainer.appendChild(progressBarInner);
+
+            // Footer
+            const footerDiv = document.createElement('div');
+            footerDiv.className = 'job-footer';
+            const progressSpan = document.createElement('span');
+            progressSpan.textContent = `${progress}% Concluído`;
+            const batchesSpan = document.createElement('span');
+            batchesSpan.textContent = `${job.completed_batches}/${job.total_batches} Blocos`;
+            footerDiv.appendChild(progressSpan);
+            footerDiv.appendChild(batchesSpan);
+
+            jobItem.appendChild(infoDiv);
+            jobItem.appendChild(progressContainer);
+            jobItem.appendChild(footerDiv);
+
+            jobsList.appendChild(jobItem);
+        });
     };
 
     // --- Agent Logic ---
+    const appendTerminalLine = (type: string, content: string, prefix?: string) => {
+        const line = document.createElement('div');
+        line.className = `terminal-line ${type}`;
+        if (prefix) {
+            const strong = document.createElement('strong');
+            strong.textContent = prefix;
+            line.appendChild(strong);
+        }
+        const textNode = document.createTextNode(content);
+        line.appendChild(textNode);
+        agentTerminal.appendChild(line);
+        agentTerminal.scrollTop = agentTerminal.scrollHeight;
+    };
+
     runMissionBtn.addEventListener('click', () => {
         const mission = missionInput.value.trim();
         if (!mission) return alert('Descreva a missão.');
@@ -185,12 +230,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const startAgentMission = (mission: string) => {
         agentDisplay.classList.remove('hidden');
         agentThought.textContent = 'Iniciando...';
-        agentTerminal.innerHTML = '<div class="terminal-line system">> Conectando...</div>';
+        agentTerminal.innerHTML = ''; // Limpeza
+        appendTerminalLine('system', 'Conectando...', '> ');
+
         runMissionBtn.disabled = true;
-        
+
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/agent?namespace=${currentNamespace}`;
-        
+
         if (agentSocket) agentSocket.close();
         agentSocket = new WebSocket(wsUrl);
 
@@ -207,19 +254,18 @@ document.addEventListener('DOMContentLoaded', () => {
         switch (type) {
             case 'thought':
                 const agentPrefix = data.agent ? `[${data.agent}]: ` : '';
-                agentThought.textContent = `${agentPrefix}${data.content}`;
-                // Também adiciona ao terminal para histórico completo
-                agentTerminal.innerHTML += `<div class="terminal-line thought"><strong>${agentPrefix}</strong>${data.content}</div>`;
+                agentThought.textContent = `${agentPrefix}${data.content || ''}`;
+                appendTerminalLine('thought', data.content || '', agentPrefix);
                 break;
             case 'tool_start':
-                agentTerminal.innerHTML += `<div class="terminal-line tool-start">[AÇÃO]: ${data.name}...</div>`;
+                appendTerminalLine('tool-start', `${data.name}...`, '[AÇÃO]: ');
                 if (data.name && toolIndicators[data.name]) {
                     toolIndicators[data.name]?.classList.add('active');
                 }
                 break;
             case 'tool_result':
                 Object.values(toolIndicators).forEach(t => t?.classList.remove('active'));
-                agentTerminal.innerHTML += `<div class="terminal-line result">${data.result}</div>`;
+                appendTerminalLine('result', data.result || '');
                 break;
             case 'awaiting_approval':
                 approvalText.textContent = `Autorizar: ${data.command}?`;
@@ -229,7 +275,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 showResult('success', 'Missão Completa');
                 break;
         }
-        agentTerminal.scrollTop = agentTerminal.scrollHeight;
     };
 
     approveBtn.addEventListener('click', () => {
@@ -242,7 +287,6 @@ document.addEventListener('DOMContentLoaded', () => {
         approvalPanel.classList.add('hidden');
     });
 
-    // --- Knowledge Graph ---
     // --- Knowledge Graph ---
     async function loadGraph() {
         const container = getEl('knowledge-graph');
@@ -257,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (e) { console.error(e); }
     }
-    
+
     getEl('refresh-graph-btn')?.addEventListener('click', loadGraph);
 
     // --- Logs ---

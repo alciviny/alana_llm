@@ -14,7 +14,7 @@ class ResearchTool(BaseTool):
         # Injeção de Dependência: Recebe o agente já configurado pelo Bridge
         self.agent = deep_search_agent
         
-    def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> str:
         """
         Executa a pesquisa profunda com tolerância a argumentos mal formatados.
         """
@@ -29,22 +29,8 @@ class ResearchTool(BaseTool):
         try:
             logger.info(f"🕵️ Alana iniciando pesquisa externa profunda: {query}")
             
-            # Tenta obter o loop de eventos atual
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
- 
-            # Executa a pesquisa
-            if loop.is_running():
-                # Se o loop já está rodando (estamos em um contexto async), 
-                # precisamos rodar em uma thread separada para não bloquear
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(lambda: asyncio.run(self.agent.perform_deep_search(query))).result()
-            else:
-                result = loop.run_until_complete(self.agent.perform_deep_search(query))
+            # Execução assíncrona nativa
+            result = await self.agent.perform_deep_search(query)
             
             report = result.get("report", "Nenhum relatório gerado.")
             return f"[PESQUISA EXTERNA CONCLUÍDA]\n\nOBJETIVO: {query}\n\nRELATÓRIO TÉCNICO:\n{report}"

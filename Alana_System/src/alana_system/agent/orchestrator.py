@@ -1,7 +1,6 @@
 import asyncio
 import logging
-import json
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import Any, Optional, Callable
 from dataclasses import dataclass
 
 from .core.engine import AgentEngine
@@ -35,9 +34,15 @@ class MultiAgentOrchestrator:
             llm=llm_engine
         )
 
-    async def run_complex_mission(self, mission: str, namespace: str = "global", callback: Callable = None):
+    async def run_complex_mission(
+        self, 
+        mission: str, 
+        namespace: str = "global", 
+        callback: Callable = None,
+        approval_queue: asyncio.Queue = None
+    ):
         """
-        Executa o fluxo de trabalho industrial: Planejar -> Pesquisar -> Resolver -> Auditar.
+        Executa o fluxo de trabalho industrial: Planejar -> Aprovar -> Pesquisar -> Resolver -> Auditar.
         """
         state = MissionState(objective=mission, namespace=namespace)
         
@@ -45,26 +50,52 @@ class MultiAgentOrchestrator:
         await self._emit_thought("Orchestrator", f"Planejando missão industrial no namespace '{namespace}'...", callback)
         state.plan = await self._plan_mission(mission)
 
-        # 2. LIBRARIAN: Busca Híbrida (RAG) com Namespace
-        await self._emit_thought("Librarian", f"Consultando base de conhecimento '{namespace}'...", callback)
-        # QueryEngine.query retorna um dicionario com performance e contexto
-        search_res = self.query_engine.query(mission, namespace=namespace)
-        state.internal_knowledge = search_res.get("context_text", "")
-        
-        # 3. ENGINEER: Execução Técnica Isolada
-        await self._emit_thought("Engineer", "Iniciando ciclos de engenharia baseados nos dados coletados...", callback)
-        # O Engenheiro agora recebe o namespace para suas ferramentas
-        state.proposed_solution = await self.engineer.run_mission(
-            f"Plano: {state.plan}\nDados: {state.internal_knowledge}\nMissão: {mission}",
-            namespace=namespace,
-            event_callback=self._wrap_engineer_callback(callback)
-        )
+        # 2. HUMAN-IN-THE-LOOP (H-4 Fix)
+        if approval_queue:
+            await self._emit_thought("Orchestrator", "Aguardando aprovação humana para o plano...", callback)
+            if callback:
+                await callback("awaiting_approval", {"command": "Executar Plano de Missão"})
+            
+            # Aguarda resposta da fila
+            try:
+                action = await asyncio.wait_for(approval_queue.get(), timeout=300) # 5 min timeout
+                if action == "abort":
+                    await self._emit_thought("Orchestrator", "Missão abortada pelo usuário.", callback)
+                    return {"status": "aborted"}
+                logger.info("✅ Missão aprovada pelo usuário.")
+            except asyncio.TimeoutError:
+                await self._emit_thought("Orchestrator", "Tempo de espera esgotado. Abortando por segurança.", callback)
+                return {"status": "timeout"}
 
-        # 4. AUDITOR: Verificação Final
-        await self._emit_thought("Auditor", "Auditando a solução proposta contra os requisitos originais...", callback)
-        state.audit_report = await self._audit_solution(state.proposed_solution, mission)
-        
-        await self._emit_thought("Orchestrator", "Missao Industrial Finalizada.", callback)
+        # 3. CICLO DE EXECUÇÃO RECURSIVO (Stark Mode)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            await self._emit_thought("Orchestrator", f"Iniciando Ciclo de Engenharia {attempt}/{max_retries}...", callback)
+            
+            # Librarian: Busca Híbrida (RAG)
+            search_res = await self.query_engine.query(mission, namespace=namespace)
+            state.internal_knowledge = search_res.get("context_text", "")
+            
+            # Engineer: Execução
+            state.proposed_solution = await self.engineer.run_mission(
+                f"Plano: {state.plan}\nDados: {state.internal_knowledge}\nMissão: {mission}\nHistórico de Auditoria: {state.audit_report}",
+                namespace=namespace,
+                event_callback=self._wrap_engineer_callback(callback)
+            )
+
+            # 4. AUDITOR: Verificação de Qualidade Stark
+            await self._emit_thought("Auditor", "Analisando rigorosamente a solução...", callback)
+            state.audit_report = await self._audit_solution(state.proposed_solution, mission)
+            
+            if "STATUS: PASS" in state.audit_report:
+                await self._emit_thought("Orchestrator", "✅ Solução aprovada pelo Auditor de Qualidade.", callback)
+                break
+            else:
+                await self._emit_thought("Orchestrator", f"⚠️ Auditor reprovou (Tentativa {attempt}). Corrigindo curso...", callback)
+                if attempt == max_retries:
+                    await self._emit_thought("Orchestrator", "❌ Limite de correções atingido. Entregando melhor esforço.", callback)
+
+        await self._emit_thought("Orchestrator", "Missão Industrial Finalizada.", callback)
         
         return {
             "solution": state.proposed_solution,
@@ -78,14 +109,14 @@ class MultiAgentOrchestrator:
             {"role": "system", "content": "Você é o Gerente do Lab Alana. Crie um plano técnico de 3 passos."},
             {"role": "user", "content": mission}
         ]
-        return self.llm.generate_answer(messages)
+        return await self.llm.generate_answer(messages)
 
     async def _audit_solution(self, solution: str, original_mission: str) -> str:
         messages = [
             {"role": "system", "content": "Você é o Auditor de Qualidade da Alana. Responda com STATUS: PASS ou FAIL e o motivo."},
             {"role": "user", "content": f"Missão: {original_mission}\nSolução: {solution}"}
         ]
-        return self.llm.generate_answer(messages)
+        return await self.llm.generate_answer(messages)
 
     async def _emit_thought(self, agent: str, thought: str, callback: Optional[Callable]):
         if callback:

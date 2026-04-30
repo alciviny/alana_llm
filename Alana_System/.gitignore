@@ -1,13 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
+env/
 build/
 develop-eggs/
 dist/
@@ -23,122 +20,73 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# celery beat
-celerybeat-schedule.*
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
+.venv/
 venv/
 ENV/
-env.bak
-venv.bak
 
-# Spyder project settings
-.spyderproject
-.spyderworkspace
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# Environments
+# Alana System - Seguranca e Credenciais (CRITICO)
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak
-venv.bak
+*.env
+secret.json
 
-# Data files
-data/
-*.csv
-*.json
-*.pdf
-*.pkl
-*.pickle
-# Ignorar dados locais do Qdrant
-qdrant_data/
-
-
-# models
-models/
-
-# logs
+# Alana System - Logs e Dados (Higiene Industrial)
+alana.log
+alana.log.*
 logs/
+data/**/*.db
+data/**/*.db-journal
+data/**/*.db-wal
+data/**/*.db-shm
+data/vector_store/
+qdrant_data/
+alana_memoria_local/
+data/agent/dynamic_tools/test_*/
+data/agent/dynamic_tools/simulation_*/
 
-# Go binaries
-orchestrator/ingestor
+# Artefatos de Teste e Benchmarks
+.pytest_cache/
+.benchmarks/
+tests/*.db
+tests/*.log
+*.heapsnapshot
+*.heapprofile
+
+# Artefatos de Interface e Documentacao Temporaria
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+test_result.txt
+
+# Binarios e Executaveis
 *.exe
+*.bin
+*.dll
+search_engine
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Alana System - Infraestrutura e Dados Locais
+models/
+notebooks/
+playground/
+scratch/
+artifacts/
+workspace/
+.chainlit/
+.files/
+bin/
+go_engines/

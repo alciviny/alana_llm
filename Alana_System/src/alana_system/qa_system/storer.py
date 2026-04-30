@@ -20,7 +20,7 @@ class KnowledgeStorer:
             logger.info(f"💾 Salvando relatorio de pesquisa no namespace '{namespace}'")
             
             # 1. Extrai entidades e relacoes do relatorio usando o motor industrial
-            graph_schema = self.extractor.extract_graph(report)
+            graph_schema = await self.extractor.extract_graph(report)
             
             # 2. Adiciona a propria query como um no de contexto
             graph_schema.entities.append(EntitySchema(

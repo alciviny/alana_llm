@@ -30,6 +30,6 @@ class BaseTool(ABC):
         pass
         
     @abstractmethod
-    def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> str:
         """A execução real da ferramenta, retornando o log do terminal ou resultado"""
         pass

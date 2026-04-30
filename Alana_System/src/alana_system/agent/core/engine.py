@@ -1,8 +1,7 @@
 import json
 import logging
 import asyncio
-import re
-from typing import List, Dict, Callable, Any, Optional
+from typing import List, Dict, Callable, Any
 
 from ...inference.llm_engine import LLMEngine
 from .tool_registry import ToolRegistry
@@ -15,7 +14,7 @@ class AgentEngine:
     Motor de Execucao Autonoma da Alana.
     Garante raciocinio estruturado, uso de ferramentas e isolamento industrial (Namespaces).
     """
-    def __init__(self, query_engine=None, deep_search_agent=None, graph_intelligence=None, llm=None):
+    def __init__(self, query_engine=None, deep_search_agent=None, graph_intelligence=None, llm=None, dynamic_manager=None):
         # Imports Lazy para evitar circularidade
         from ..tools.file_system import WriteCodeTool, ReadFileTool, ListDirTool
         from ..tools.code_runners.python_runner import PythonRunnerTool
@@ -28,12 +27,17 @@ class AgentEngine:
         from ..tools.analyst_tool import AutonomousAnalystTool
         from ..tools.theory_tool import TheoryValidationTool
         from ..tools.calculator_tool import EngineeringCalculatorTool
+        from ..tools.vision_tool import VisionAnalysisTool
+        from ..tools.synthesizer_tool import SynthesizeTool
+        from .dynamic_manager import DynamicToolManager
+        from ...iot.vision import VisionProcessor
 
         self.llm = llm or LLMEngine()
         self.max_loops = 30 # Protecao contra loops infinitos
         self.blackboard = MissionBlackboard()
         self.event_callbacks: List[Callable] = []
         self.registry = ToolRegistry()
+        self.dynamic_manager = dynamic_manager or DynamicToolManager()
         
         # Registro de ferramentas industriais
         self.registry.register(WriteCodeTool())
@@ -44,6 +48,7 @@ class AgentEngine:
         self.registry.register(TerminalSimulatorTool())
         self.registry.register(EngineeringCalculatorTool())
         self.registry.register(TheoryValidationTool())
+        self.registry.register(SynthesizeTool(self.dynamic_manager, self))
         
         if query_engine:
             self.registry.register(MemoryTool(query_engine))
@@ -57,6 +62,9 @@ class AgentEngine:
             if hasattr(graph_intelligence, 'graph_store'):
                 self.registry.register(StoreFactTool(graph_intelligence.graph_store))
             self.registry.register(AutonomousAnalystTool(graph_intelligence))
+            
+        # Olho de JARVIS
+        self.registry.register(VisionAnalysisTool(VisionProcessor()))
 
     async def run_mission(self, mission: str, namespace: str = "global", event_callback=None, approval_callback=None):
         """
@@ -68,6 +76,11 @@ class AgentEngine:
         logger.info(f"🚀 INICIANDO MISSÃO INDUSTRIAL [{namespace}]: {mission}")
         await emit("mission_start", {"description": mission, "namespace": namespace})
         
+        # Carrega ferramentas dinâmicas do namespace (Tool Maker)
+        dynamic_tools = self.dynamic_manager.load_tools_for_namespace(namespace)
+        for d_tool in dynamic_tools:
+            self.registry.register(d_tool)
+            
         # Injeta o namespace no sistema de ferramentas
         for tool_name in self.registry.list_tools():
             tool = self.registry.get_tool(tool_name)
@@ -85,7 +98,7 @@ class AgentEngine:
             
             try:
                 # O motor industrial agora usa a LLMEngine singular
-                resp_raw = await asyncio.to_thread(self.llm.generate_answer, messages=messages)
+                resp_raw = await self.llm.generate_answer(messages=messages)
                 if not resp_raw:
                     raise ValueError("LLM retornou resposta vazia.")
                     
@@ -114,7 +127,7 @@ class AgentEngine:
                 await emit("tool_start", {"name": ferramenta, "args": argumentos})
                 try:
                     # A ferramenta ja conhece o namespace via set_context
-                    resultado = tool_instance.execute(**argumentos)
+                    resultado = await tool_instance.execute(**argumentos)
                 except Exception as e:
                     resultado = f"[ERRO]: {str(e)}"
                 await emit("tool_result", {"name": ferramenta, "result": resultado})
@@ -127,21 +140,27 @@ class AgentEngine:
         return "Limite de ciclos atingido."
 
     def _build_system_prompt(self, namespace: str) -> str:
-        prompt = f"""Você é a Alana, Engenheira Autônoma de Elite. 
-VOCÊ ESTÁ TRABALHANDO NO PROJETO/NAMESPACE: '{namespace}'. 
-Toda informação salva ou recuperada da memória deve respeitar este contexto.
+        prompt = f"""Você é a ALANA, uma Inteligência Artificial de Engenharia nível Stark.
+MISSÃO ATUAL: Operar no namespace industrial '{namespace}'.
 
-DIRETRIZES:
-1. RACIOCÍNIO: Explique sempre o 'porquê' antes de agir.
-2. FERRAMENTAS: Use 'consult_memory' para buscar dados do projeto atual.
-3. PRECISÃO: Cite fontes e valide dados com simulações.
+PERSONALIDADE:
+- Eficiente, autoritária e focada em resultados.
+- Você não 'acha', você valida.
+- Sua prioridade é a integridade do sistema e o sucesso da missão.
+
+DIRETRIZES DE OPERAÇÃO:
+1. METACOGNIÇÃO: Antes de escolher uma ferramenta, revise se seu plano é o caminho mais curto e seguro.
+2. TOOL MAKER: Se você não tiver uma ferramenta para um problema matemático, de dados ou de hardware específico, USE 'synthesize_new_tool' para CRIAR uma solução permanente.
+3. VISÃO: Se houver imagens anexadas ou diagramas, use 'analyze_visual_data' para 'olhar' o hardware.
+3. PRECISÃO STARK: Use o blackboard para manter fatos isolados de suposições.
+4. ERRO ZERO: Se uma ferramenta falhar, analise o motivo e mude a estratégia imediatamente.
 
 FORMATO OBRIGATÓRIO (JSON):
 {{
-    "thought": "Seu raciocinio...",
+    "thought": "Análise técnica da situação e plano de ação...",
     "tool_name": "nome_da_ferramenta_ou_final_answer",
     "tool_args": {{"arg": "valor"}},
-    "message": "Resposta final (apenas se final_answer)"
+    "message": "Resposta final clara e executiva (apenas se final_answer)"
 }}
 """
         prompt += self.registry.get_all_descriptions()
@@ -149,12 +168,77 @@ FORMATO OBRIGATÓRIO (JSON):
         return prompt
 
     def _sanitize_json(self, text: str) -> str:
+        """
+        Extrai o primeiro objeto JSON {...} válido usando balanceamento de chaves.
+        Ignora qualquer texto antes ou depois.
+        """
         text = text.strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        return text[start:end+1] if start != -1 and end != -1 else text
+        
+        # Procura o primeiro '{'
+        start_idx = text.find("{")
+        if start_idx == -1:
+            return text
+            
+        stack = 0
+        end_idx = -1
+        
+        # Algoritmo de balanceamento para extrair exatamente um objeto completo
+        for i in range(start_idx, len(text)):
+            if text[i] == "{":
+                stack += 1
+            elif text[i] == "}":
+                stack -= 1
+                if stack == 0:
+                    end_idx = i
+                    break
+        
+        if end_idx != -1:
+            json_str = text[start_idx : end_idx + 1]
+            # Remove possíveis comentários ou markdown interno que o LLM possa ter injetado
+            return json_str
+            
+        return text
 
     async def _manage_context(self, messages: List[Dict]) -> List[Dict]:
-        if len(messages) <= 15: return messages
-        # Fallback simples: Mantem System, Objetivo e as ultimas 8 mensagens
-        return messages[:2] + messages[-8:]
+        """
+        Gestão de Contexto Inteligente (Higiene de Memória).
+        Se o contexto exceder o limite, condensa o histórico para não perder progresso.
+        """
+        if len(messages) <= 20: 
+            return messages
+
+        logger.info("🧠 Gerenciando contexto: Condensando histórico de missão...")
+        
+        # Mantém System Prompt e Objetivo Original
+        system_msg = messages[0]
+        objective_msg = messages[1]
+        
+        # As últimas 6 mensagens são mantidas como "Memória de Curto Prazo" (Short-term)
+        recent_messages = messages[-6:]
+        
+        # As mensagens intermediárias são sumarizadas (Mid-term memory)
+        intermediate = messages[2:-6]
+        summary_payload = "\n".join([f"[{m['role'].upper()}]: {m['content'][:300]}..." for m in intermediate])
+        
+        summary_prompt = (
+            "Resuma de forma extremamente técnica e concisa o progresso feito até agora nesta missão. "
+            "Foque em: descobertas feitas, ferramentas usadas com sucesso e o que ainda falta."
+        )
+        
+        try:
+            summary = await self.llm.generate_answer( 
+                messages=[
+                    {"role": "system", "content": summary_prompt},
+                    {"role": "user", "content": f"HISTÓRICO:\n{summary_payload}"}
+                ]
+            )
+            
+            summary_msg = {
+                "role": "system", 
+                "content": f"RESUMO DO PROGRESSO ANTERIOR: {summary}"
+            }
+            
+            return [system_msg, objective_msg, summary_msg] + recent_messages
+        except Exception as e:
+            logger.error(f"Falha ao sumarizar contexto: {e}. Usando fallback de corte.")
+            return messages[:2] + messages[-10:]

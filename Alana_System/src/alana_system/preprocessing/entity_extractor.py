@@ -64,7 +64,7 @@ class EntityExtractor:
             except:
                 self.use_spacy = False
 
-    def extract_graph(self, text: str) -> KnowledgeGraphSchema:
+    async def extract_graph(self, text: str) -> KnowledgeGraphSchema:
         """
         Extração Profunda de Grafos de Conhecimento.
         Migrado de spaCy-First para LLM-First (Industrial Grade).
@@ -80,7 +80,7 @@ class EntityExtractor:
         ]
 
         try:
-            resposta_bruta = self.llm.generate_answer(
+            resposta_bruta = await self.llm.generate_answer(
                 messages=messages, 
                 metadata={"force_json": True}
             )

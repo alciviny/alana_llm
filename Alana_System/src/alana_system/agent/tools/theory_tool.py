@@ -18,7 +18,7 @@ class TheoryValidationTool(BaseTool):
         self.writer = WriteCodeTool()
         self.runner = PythonRunnerTool()
         
-    def execute(self, theory: str, simulation_code: str) -> str:
+    async def execute(self, theory: str, simulation_code: str) -> str:
         """
         Executa o ciclo: Hipótese -> Experimento -> Verificação.
         """
@@ -32,12 +32,12 @@ class TheoryValidationTool(BaseTool):
         logger.info(f"🔬 Alana iniciando validação de teoria: {theory[:50]}...")
         
         # 2. Escreve o código
-        write_res = self.writer.execute(filename, simulation_code)
+        write_res = await self.writer.execute(filename, simulation_code)
         if "[ERRO]" in write_res:
             return write_res
             
         # 3. Executa a simulação
-        run_res = self.runner.execute(filename)
+        run_res = await self.runner.execute(filename)
         
         # 4. Sintetiza o relatório científico
         report = (

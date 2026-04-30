@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -170,7 +170,7 @@ func processTask(ctx context.Context, workerID int, apiURL string, task Task) er
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := ioutil.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 		}
 

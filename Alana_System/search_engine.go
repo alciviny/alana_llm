@@ -35,6 +35,7 @@ type Config struct {
 	SearchTimeout  time.Duration
 	ContextTokens  int
 	ScoreThreshold float32
+	CollectionName string
 }
 
 func loadConfig() Config {
@@ -50,6 +51,7 @@ func loadConfig() Config {
 		SearchTimeout:  time.Duration(searchTimeout) * time.Second,
 		ContextTokens:  tokens,
 		ScoreThreshold: float32(threshold),
+		CollectionName: getEnv("QDRANT_COLLECTION", "alana_knowledge_base"),
 	}
 }
 
@@ -125,22 +127,44 @@ func callSidecar(ctx context.Context, endpoint string, payload interface{}, targ
 
 type AlanaEngine struct {
 	config Config
+	conn   *grpc.ClientConn
+}
+
+func NewAlanaEngine(cfg Config) (*AlanaEngine, error) {
+	address := fmt.Sprintf("%s:%d", cfg.QdrantHost, cfg.QdrantPort)
+	
+	// Conexão persistente com configurações industriais
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, address, 
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(), // Garante que a conexão está pronta
+	)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao conectar no Qdrant (%s): %w", address, err)
+	}
+
+	log.Printf("🔌 Conexão gRPC estabelecida com Qdrant em %s", address)
+	return &AlanaEngine{
+		config: cfg,
+		conn:   conn,
+	}, nil
+}
+
+func (e *AlanaEngine) Close() {
+	if e.conn != nil {
+		e.conn.Close()
+	}
 }
 
 func (e *AlanaEngine) Search(ctx context.Context, vector []float32, topK uint64) ([]SearchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.config.SearchTimeout)
 	defer cancel()
 
-	address := fmt.Sprintf("%s:%d", e.config.QdrantHost, e.config.QdrantPort)
-	conn, err := grpc.DialContext(ctx, address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, fmt.Errorf("falha ao conectar no Qdrant (%s): %w", address, err)
-	}
-	defer conn.Close()
-
-	pointsClient := qdrant.NewPointsClient(conn)
+	pointsClient := qdrant.NewPointsClient(e.conn)
 	resp, err := pointsClient.Search(ctx, &qdrant.SearchPoints{
-		CollectionName: "alana_knowledge_base",
+		CollectionName: e.config.CollectionName,
 		Vector:         vector,
 		Limit:          topK,
 		WithPayload: &qdrant.WithPayloadSelector{
@@ -194,7 +218,12 @@ func (e *AlanaEngine) AssembleContext(results []SearchResult) string {
 
 func main() {
 	cfg := loadConfig()
-	engine := &AlanaEngine{config: cfg}
+	engine, err := NewAlanaEngine(cfg)
+	if err != nil {
+		log.Fatalf("❌ Erro fatal ao inicializar motor Alana: %v", err)
+	}
+	defer engine.Close()
+
 	ctx := context.Background()
 
 	fmt.Printf("🤖 Alana System | Qdrant: %s | API: %s\n", cfg.QdrantHost, cfg.SidecarURL)

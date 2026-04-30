@@ -30,6 +30,24 @@ alana.log
 .qodo/
 .zencoder/
 .zenflow/
+.agents/
+.files/
 
 # Environment
 .env
+*.env
+
+# Alana System Specific (Nested)
+Alana_System/alana.log
+Alana_System/frontend/node_modules/
+Alana_System/frontend/dist/
+Alana_System/models/
+Alana_System/bin/
+Alana_System/go_engines/
+Alana_System/artifacts/
+Alana_System/workspace/
+Alana_System/scratch/
+Alana_System/notebooks/
+Alana_System/playground/
+Alana_System/.chainlit/
+Alana_System/.files/

@@ -10,43 +10,59 @@ class CppRunnerTool(BaseTool):
     def __init__(self, workspace_path: str = "data/sandbox"):
         self.workspace = Path(workspace_path)
         
-    def execute(self, filename: str) -> str:
-        file_path = self.workspace / filename
+    async def execute(self, filename: str) -> str:
+        import asyncio
+        # Define o workspace real (isolado por namespace)
+        workspace = self.workspace / self.current_namespace
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        file_path = workspace / filename
         if not file_path.exists():
-            return f"[ERRO] O arquivo {filename} não existe no sandbox."
+            return f"[ERRO] O arquivo {filename} não existe no sandbox do projeto {self.current_namespace}."
             
-        executable = self.workspace / "output.exe"
+        executable_name = "output.exe"
+        executable_path = workspace / executable_name
         
         try:
             # 1. Passo de Compilação (usando g++)
-            compile_cmd = ["g++", filename, "-o", "output.exe"]
-            comp_result = subprocess.run(compile_cmd, cwd=self.workspace, capture_output=True, text=True)
+            compile_process = await asyncio.create_subprocess_exec(
+                "g++", filename, "-o", executable_name,
+                cwd=str(workspace.absolute()),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_comp, stderr_comp = await compile_process.communicate()
             
-            if comp_result.returncode != 0:
-                return f"[ERRO DE COMPILAÇÃO C++]\n{comp_result.stderr}\nDICA: Verifique a sintaxe e as bibliotecas incluídas."
+            if compile_process.returncode != 0:
+                return f"[ERRO DE COMPILAÇÃO C++]\n{stderr_comp.decode()}\nDICA: Verifique a sintaxe e as bibliotecas incluídas."
                 
             # 2. Passo de Execução
-            # Usamos o nome do arquivo diretamente pois o 'cwd' já é o sandbox
-            run_cmd = ["./output.exe"] if os.name != 'nt' else ["output.exe"]
-            run_result = subprocess.run(
+            run_cmd = f"./{executable_name}" if os.name != 'nt' else executable_name
+            run_process = await asyncio.create_subprocess_exec(
                 run_cmd,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                timeout=45
+                cwd=str(workspace.absolute()),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
             
-            if run_result.returncode == 0:
-                # Limpeza segura do executável (evita erros se o Windows travar o arquivo)
+            try:
+                stdout, stderr = await asyncio.wait_for(run_process.communicate(), timeout=45)
+                returncode = run_process.returncode
+                output = stdout.decode()
+                error = stderr.decode()
+            except asyncio.TimeoutError:
+                run_process.kill()
+                return "[FALHA CRÍTICA] O código C++ entrou em Loop Infinito e foi abortado."
+            
+            if returncode == 0:
+                # Limpeza segura do executável
                 try:
-                    if executable.exists(): os.remove(executable)
+                    if executable_path.exists(): os.remove(executable_path)
                 except: pass
                 
-                return f"[EXECUÇÃO C++ COM SUCESSO]\nSAÍDA DO PROGRAMA:\n------------------\n{run_result.stdout}\n------------------\nMissão cumprida com sucesso."
+                return f"[EXECUÇÃO C++ COM SUCESSO]\nSAÍDA DO PROGRAMA:\n------------------\n{output}\n------------------\nMissão cumprida com sucesso."
             else:
-                return f"[FALHA NA EXECUÇÃO C++]\nSAÍDA:\n{run_result.stdout}\nERROS:\n{run_result.stderr}"
+                return f"[FALHA NA EXECUÇÃO C++]\nSAÍDA:\n{output}\nERROS:\n{error}"
                 
-        except subprocess.TimeoutExpired:
-            return "[FALHA CRÍTICA] O código C++ entrou em Loop Infinito e foi abortado."
         except Exception as e:
             return f"[ERRO DO SISTEMA] Erro ao tentar compilar/executar C++: {str(e)}"

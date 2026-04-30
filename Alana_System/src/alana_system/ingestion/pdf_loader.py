@@ -8,7 +8,7 @@ from typing import List, Tuple, Optional
 from PIL import Image
 
 # Import integrado para extração de conteúdo
-from ..data_ingestion.pdf_reader.reader import PDFReader, PDFMetadata, PDFError
+from .pdf_reader import PDFReader, PDFMetadata, PDFError
 
 logger = logging.getLogger(__name__)
 

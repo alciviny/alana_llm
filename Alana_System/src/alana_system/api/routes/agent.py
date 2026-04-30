@@ -24,8 +24,8 @@ async def agent_websocket(websocket: WebSocket):
         try:
             if websocket.client_state.value == 1: # Connected
                 await websocket.send_json({"type": event_type, "data": data})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"⚠️ Falha ao transmitir evento {event_type} via WebSocket: {e}")
 
     try:
         while True:
@@ -44,12 +44,13 @@ async def agent_websocket(websocket: WebSocket):
 
                 logger.info(f"🎯 Nova Missao [{namespace}]: {mission}")
                 
-                # Dispara o Orquestrador Industrial
+                # Dispara o Orquestrador Industrial (H-4 Fix: Passando a fila de aprovacao)
                 current_mission_task = asyncio.create_task(
                     orchestrator.run_complex_mission(
                         mission=mission, 
                         namespace=namespace,
-                        callback=stream_event
+                        callback=stream_event,
+                        approval_queue=approval_queue
                     )
                 )
             
@@ -57,7 +58,7 @@ async def agent_websocket(websocket: WebSocket):
             elif "action" in message:
                 action = message.get("action")
                 await approval_queue.put(action)
-                logger.info(f"🚦 Autorizacao recebida: {action}")
+                logger.info(f"🚦 Autorizacao recebida e enfileirada: {action}")
                 
     except WebSocketDisconnect:
         logger.info("🔌 WebSocket Agent desconectado")

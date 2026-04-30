@@ -11,7 +11,7 @@ class StoreFactTool(BaseTool):
     def __init__(self, graph_store: GraphStore):
         self.graph_store = graph_store
         
-    def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> str:
         if not self.graph_store:
             return "Erro: Base de grafos nao disponivel."
             

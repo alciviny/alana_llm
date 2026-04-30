@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import concurrent.futures
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -52,7 +53,7 @@ class IngestionManager:
         self.entity_extractor = EntityExtractor(llm=self.intelligence.llm_engine)
         self.max_workers = max_workers
 
-    def process_directory(self, directory_path: str, namespace: str = "global"):
+    async def process_directory(self, directory_path: str, namespace: str = "global"):
         """Processa todos os arquivos de um diretorio com inteligencia e checkpoints."""
         path = Path(directory_path)
         if not path.exists():
@@ -63,15 +64,14 @@ class IngestionManager:
         logger.info(f"📂 Iniciando Ingestao Omni: {len(files)} arquivos no namespace '{namespace}'")
 
         # Processamento sequencial de arquivos para gerenciar VRAM (Ollama/Whisper)
-        # Mas internamente, o processamento de lotes de um arquivo pode ser paralelo.
         for file_path in files:
             try:
-                self.process_file(str(file_path), namespace)
+                await self.process_file(str(file_path), namespace)
             except Exception as e:
                 logger.error(f"Falha ao processar {file_path.name}: {e}")
 
-    def process_file(self, file_path: str, namespace: str = "global"):
-        """Fluxo industrial: Hash -> Checkpoint -> Extracao -> IA -> Vetores."""
+    async def process_file(self, file_path: str, namespace: str = "global"):
+        """Fluxo industrial assíncrono: Hash -> Checkpoint -> Extracao -> IA -> Vetores."""
         path = Path(file_path)
         file_hash = self.extractor.get_file_hash(path)
         filename = path.name
@@ -80,14 +80,15 @@ class IngestionManager:
         # 1. Verifica Checkpoint Geral
         processed_batches = self.graph_store.get_processed_batches(file_hash, namespace)
         
-        # 2. Extracao de Texto (Depende do tipo)
+        # 2. Extracao de Texto (CPU bound, mas mantemos síncrono por simplicidade ou to_thread)
         raw_pages = []
         if suffix == ".pdf" or suffix in [".txt", ".md", ".docx"]:
             raw_pages = self.extractor.extract_text(path)
         elif suffix in [".mp3", ".wav", ".m4a"]:
             if not self.audio_transcriber:
                 self.audio_transcriber = AudioTranscriber()
-            raw_pages = self.audio_transcriber.transcribe(path)
+            # Whisper é pesado, usamos to_thread para não travar o loop
+            raw_pages = await asyncio.to_thread(self.audio_transcriber.transcribe, path)
         else:
             return # Formato ignorado
 
@@ -108,29 +109,33 @@ class IngestionManager:
         # 5. Extracao de Grafo (Com Checkpoint por Lote)
         logger.info(f"🧠 Extraindo Conhecimento [{namespace}]: {filename} ({total_batches} lotes)")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = []
-            for text, p_num, b_num in extraction_batches:
-                if b_num in processed_batches:
-                    continue # Pula o que ja foi feito
-                
-                futures.append(executor.submit(
-                    self._process_knowledge_batch, text, file_hash, filename, p_num, b_num, namespace
-                ))
+        # Limitamos a concorrência de extração via LLM para evitar sobrecarga no Ollama
+        semaphore = asyncio.Semaphore(self.max_workers)
 
-            for future in concurrent.futures.as_completed(futures):
-                future.result() # Levanta excecoes se houver
+        async def _bounded_batch_process(text, p_num, b_num):
+            async with semaphore:
+                return await self._process_knowledge_batch(text, file_hash, filename, p_num, b_num, namespace)
 
-        # 6. Indexacao Vetorial (Apenas se houver chunks novos ou se o job nao estiver COMPLETED)
-        # Para simplificar, sempre atualizamos os vetores (upsert e idempotente no Qdrant)
+        tasks = []
+        for text, p_num, b_num in extraction_batches:
+            if b_num in processed_batches:
+                continue # Pula o que ja foi feito
+            tasks.append(_bounded_batch_process(text, p_num, b_num))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+        # 6. Indexacao Vetorial (Usa to_thread para o SentenceTransformer CPU/GPU bound)
         logger.info(f"🔢 Gerando Embeddings: {filename}")
-        embedded_chunks = self.embedder.embed_chunks(chunks)
+        embedded_chunks = await asyncio.to_thread(self.embedder.embed_chunks, chunks)
         self.vector_store.upsert_embeddings(embedded_chunks, namespace=namespace)
 
-        logger.info(f"✅ Arquivo finalizado: {filename}")
+        # 7. Finaliza Job com sucesso
+        self.graph_store.update_job_status(file_hash, namespace, "COMPLETED")
+        logger.info(f"✅ Arquivo finalizado com sucesso: {filename}")
 
     def _prepare_extraction_batches(self, pages: List[Any], filename: str) -> List[tuple]:
-        """Agrupa paginas para otimizar chamadas ao Ollama (Igual ao run_ingestion)."""
+        """Agrupa paginas para otimizar chamadas ao Ollama."""
         batches = []
         current_text = ""
         current_page = 1
@@ -152,13 +157,22 @@ class IngestionManager:
             
         return batches
 
-    def _process_knowledge_batch(self, text, file_hash, filename, page_num, batch_num, namespace):
-        """Processa um lote individual de conhecimento e salva progresso."""
+    async def _process_knowledge_batch(self, text, file_hash, filename, page_num, batch_num, namespace):
+        """Processa um lote individual de conhecimento de forma assíncrona."""
         try:
-            # Extrai Grafo via LLM
-            graph_data = self.entity_extractor.extract_graph(text)
+            # Extrai Grafo via LLM (Agora awaitable)
+            graph_data = await self.entity_extractor.extract_graph(text)
             
             if graph_data.entities or graph_data.relations:
+                # RECONCILIAÇÃO SEMÂNTICA (Ponto 3 Auditoria)
+                # Unifica entidades similares para evitar fragmentação do grafo
+                for entity in graph_data.entities:
+                    entity.name = await self.intelligence.reconcile_entity(entity.name, namespace)
+                
+                for rel in graph_data.relations:
+                    rel.subject = await self.intelligence.reconcile_entity(rel.subject, namespace)
+                    rel.object = await self.intelligence.reconcile_entity(rel.object, namespace)
+
                 self.graph_store.add_knowledge(
                     graph=graph_data,
                     source_doc=filename,

@@ -69,7 +69,7 @@ class TestAgentEngineLogic(unittest.IsolatedAsyncioTestCase):
         mock_llm = MagicMock()
         engine = AgentEngine(llm=mock_llm)
         engine.blackboard.add_fact("Teste de Prompt")
-        prompt = engine._build_system_prompt()
+        prompt = engine._build_system_prompt(namespace="TestUnit")
         self.assertIn("Teste de Prompt", prompt)
 
 if __name__ == "__main__":

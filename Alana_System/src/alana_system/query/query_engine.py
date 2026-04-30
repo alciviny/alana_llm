@@ -50,14 +50,14 @@ class QueryEngine:
         
         # 1. Inicializa o cérebro analítico
         from alana_system.memory.intelligence import GraphIntelligence
-        self.intelligence = GraphIntelligence(graph_store, llm_engine)
+        self.intelligence = GraphIntelligence(graph_store, llm_engine, self.embedder)
 
         # 2. Carrega modelos uma única vez (Performance Industrial)
         logger.info("🧠 Carregando Modelos de Re-Ranking e Extração...")
         self.reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=self.embedder.device)
         self.entity_extractor = EntityExtractor(llm=self.llm_engine, use_spacy=True)
 
-    def answer_query(self, question: str, namespace: str = "global") -> str:
+    async def answer_query(self, question: str, namespace: str = "global") -> str:
         """
         Executa o pipeline completo de RAG com suporte a namespace.
         """
@@ -66,12 +66,23 @@ class QueryEngine:
         query_result = self.query(question, namespace=namespace)
         context_text = query_result["context_text"]
         
-        return self.llm_engine.generate_answer(
-            query=question,
-            context_text=context_text,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Você é a Alana, assistente de engenharia autônoma. "
+                    "Responda à pergunta do usuário com base EXCLUSIVAMENTE no contexto fornecido. "
+                    "Seja técnico, preciso e cite as fontes quando disponíveis."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"CONTEXTO:\n{context_text}\n\nPERGUNTA: {question}",
+            },
+        ]
+        return await self.llm_engine.generate_answer(messages=messages)
 
-    def query(self, question: str, namespace: str = "global") -> Dict[str, Any]:
+    async def query(self, question: str, namespace: str = "global") -> Dict[str, Any]:
         """
         Executa consulta híbrida GraphRAG com Re-Ranking Neural e isolamento de Namespace.
         """
@@ -102,7 +113,7 @@ class QueryEngine:
 
         # 4. Descoberta de Padrões (Filtrado por Entidades do Contexto)
         t0 = time.perf_counter()
-        analysis = self.intelligence.analyze_patterns(focus_entities=seed_entities, namespace=namespace)
+        analysis = await self.intelligence.analyze_patterns(focus_entities=seed_entities, namespace=namespace)
         insights = analysis.get("insights", [])
         t_intel = time.perf_counter() - t0
 

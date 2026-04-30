@@ -61,8 +61,7 @@ class DeepSearchAgent:
         """
         
         logger.info("✍️ Gerando relatorio sintetizado...")
-        report = await asyncio.to_thread(
-            self.llm.generate_answer, 
+        report = await self.llm.generate_answer( 
             messages=[{"role": "system", "content": report_prompt}]
         )
 

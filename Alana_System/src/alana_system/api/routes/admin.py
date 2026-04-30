@@ -52,6 +52,7 @@ async def get_logs(lines: int = Query(100, ge=10, le=500)):
 async def get_graph_data(
     namespace: str = Query("global"),
     limit: int = Query(150, le=500),
+    version: int = Query(1),
     graph_store=Depends(get_graph_store)
 ):
     """
@@ -59,8 +60,8 @@ async def get_graph_data(
     Otimizado para carregar tipos e relacoes em lote com filtro de namespace.
     """
     try:
-        # Busca as relacoes filtradas por namespace
-        relations = graph_store.query_subgraph_by_namespace(namespace, limit=limit)
+        # Busca as relacoes filtradas por namespace e versao
+        relations = graph_store.query_subgraph_by_namespace(namespace, limit=limit, version=version)
         
         nodes = []
         edges = []
@@ -81,11 +82,12 @@ async def get_graph_data(
                     # Otimizacao: o query_subgraph_by_namespace agora ja traz o tipo se possivel
                     # Se nao trouxer, usamos default
                     e_type = rel.get(f"{'s' if node_name==subj else 'o'}_type", "Conceito")
+                    e_desc = rel.get(f"{'s' if node_name==subj else 'o'}_desc", "")
                     
                     nodes.append({
                         "id": node_name,
                         "label": node_name,
-                        "title": f"Tipo: {e_type}",
+                        "title": f"Tipo: {e_type}\nDescrição: {e_desc}" if e_desc else f"Tipo: {e_type}",
                         "color": color_map.get(e_type, "#94a3b8"),
                         "font": {"color": "#ffffff"}
                     })
@@ -102,3 +104,17 @@ async def get_graph_data(
     except Exception as e:
         logger.error(f"Erro ao exportar grafo: {e}")
         return {"nodes": [], "edges": []}
+
+@router.get("/graph/hubs")
+async def get_graph_hubs(
+    namespace: str = Query("global"),
+    limit: int = Query(10),
+    graph_store=Depends(get_graph_store)
+):
+    """Retorna os principais Hubs (entidades mais conectadas) para visualizacao dinamica."""
+    try:
+        hubs = graph_store.top_hubs(limit=limit, namespace=namespace)
+        return {"hubs": hubs, "namespace": namespace}
+    except Exception as e:
+        logger.error(f"Erro ao buscar hubs: {e}")
+        return {"hubs": []}

@@ -11,7 +11,7 @@ class NavigateGraphTool(BaseTool):
     def __init__(self, intelligence: GraphIntelligence):
         self.intelligence = intelligence
         
-    def execute(self, entity: str, hops: int = 1) -> str:
+    async def execute(self, entity: str, hops: int = 1) -> str:
         if not self.intelligence:
             return "Erro: Módulo de inteligência de grafo não inicializado."
             

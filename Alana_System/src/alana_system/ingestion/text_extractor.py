@@ -36,10 +36,10 @@ class TextExtractor:
             return []
 
     def get_file_hash(self, file_path: Union[str, Path]) -> str:
-        """Gera um hash MD5 para controle de idempotencia."""
-        hasher = hashlib.md5()
+        """Gera um hash SHA-256 para controle de idempotência industrial."""
+        hasher = hashlib.sha256()
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+            for chunk in iter(lambda: f.read(65536), b""):
                 hasher.update(chunk)
         return hasher.hexdigest()
 

@@ -1,11 +1,19 @@
 # Exclude local environment and git
 .venv
 .git
+.gitignore
+.dockerignore
 .vscode
+.idea
 __pycache__
 *.pyc
 *.pyo
 *.pyd
+
+# Exclude secrets (Inject via env vars instead)
+.env
+*.env
+secret.json
 
 # Exclude large local data or logs
 alana.log
@@ -19,12 +27,32 @@ qdrant_storage/
 
 # Exclude local binaries
 *.exe
+*.bin
 alana_ingestor
 alana_search
+
+# Exclude UI artifacts and screenshots
+*.png
+*.jpg
+*.jpeg
 
 # Exclude local models (very large!)
 models/
 
-# Exclude local notebooks
+# Exclude local notebooks, playground and artifacts
 notebooks/
 playground/
+scratch/
+artifacts/
+workspace/
+.chainlit/
+.files/
+
+# Exclude local binaries and Go artifacts
+bin/
+go_engines/
+search_engine
+alana_ingestor
+alana_search
+*.exe
+*.bin

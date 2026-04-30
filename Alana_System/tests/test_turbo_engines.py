@@ -3,8 +3,8 @@ import os
 import sys
 from pathlib import Path
 
-# Adiciona o caminho do src para os imports funcionarem
-sys.path.append(os.path.join(os.getcwd(), "src"))
+# Adiciona o caminho do src para os imports funcionarem (Higiene L-2)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alana_system.preprocessing.chunker import TextChunker, CleanedPageText
 from alana_system.memory.graph_store import GraphStore

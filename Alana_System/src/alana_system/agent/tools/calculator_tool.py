@@ -24,7 +24,7 @@ class EngineeringCalculatorTool(BaseTool):
             'e': np.e
         }
         
-    def execute(self, expression: str = None, **kwargs) -> str:
+    async def execute(self, expression: str = None, **kwargs) -> str:
         # Tenta pegar a expressão de qualquer forma (argumento nomeado ou kwargs)
         expr = expression or kwargs.get("expression")
         

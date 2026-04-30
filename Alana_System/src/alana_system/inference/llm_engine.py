@@ -1,8 +1,9 @@
 import logging
 import time
 import json
+import asyncio
 from typing import Optional, List, Dict, Any, Generator
-from litellm import completion
+from litellm import completion, acompletion
 
 logger = logging.getLogger("alana.inference.engine")
 
@@ -25,7 +26,7 @@ class LLMEngine:
         
         logger.info(f"🤖 LLMEngine Ativa | Modelo: {self.model} | Contexto: {self.context_window}")
 
-    def generate_answer(
+    async def generate_answer(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.1,
@@ -34,7 +35,7 @@ class LLMEngine:
         stream: bool = False
     ) -> Any:
         """
-        Gera uma resposta com suporte a retentativas e modo JSON.
+        Gera uma resposta assíncrona com suporte a retentativas e modo JSON.
         """
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
@@ -59,7 +60,7 @@ class LLMEngine:
                 if stream:
                     return self._generate_stream(kwargs)
                 
-                response = completion(**kwargs)
+                response = await acompletion(**kwargs)
                 duration = time.perf_counter() - start_time
                 
                 answer = response.choices[0].message.content.strip()
@@ -69,17 +70,17 @@ class LLMEngine:
             except Exception as e:
                 logger.warning(f"⚠️ Falha na tentativa {attempt+1} do LLM: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt) # Backoff exponencial
+                    await asyncio.sleep(2 ** attempt) # Backoff exponencial assíncrono
                 else:
                     logger.error("❌ Erro crítico: Todas as tentativas de LLM falharam.")
                     return "Desculpe, tive um problema de comunicação com o meu motor de pensamento local. Verifique se o Ollama está aberto."
 
-    def _generate_stream(self, kwargs: Dict[str, Any]) -> Generator[str, None, None]:
-        """Gerador para respostas em tempo real (Streaming)."""
+    async def _generate_stream(self, kwargs: Dict[str, Any]):
+        """Gerador assíncrono para respostas em tempo real (Streaming)."""
         try:
             kwargs["stream"] = True
-            response = completion(**kwargs)
-            for chunk in response:
+            response = await acompletion(**kwargs)
+            async for chunk in response:
                 content = chunk.choices[0].delta.content
                 if content:
                     yield content
@@ -89,5 +90,4 @@ class LLMEngine:
 
     def get_token_count(self, text: str) -> int:
         """Estima contagem de tokens (Aproximação conservadora para modelos Llama)."""
-        # Sem tiktoken para modelos Llama, usamos a regra de ouro de 1 token ~= 3.5 caracteres
         return len(text) // 3

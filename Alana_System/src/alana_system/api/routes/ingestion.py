@@ -13,36 +13,40 @@ from alana_system.ingestion.manager import IngestionManager
 logger = logging.getLogger("alana.api.ingestion")
 router = APIRouter(tags=["Ingestion"], prefix="/ingestion")
 
+import asyncio
 # Limite de concorrência para proteger CPU/GPU local
-ingestion_semaphore = threading.Semaphore(2)
+ingestion_semaphore = asyncio.Semaphore(2)
 
 class ProcessPathRequest(BaseModel):
     path: str
     namespace: str = "global"
 
-def _background_ingestion_task(file_path: Path, namespace: str, app_state: Any):
-    """Executa a ingestão industrial em segundo plano."""
-    try:
-        from alana_system.memory.intelligence import GraphIntelligence
-        intelligence = GraphIntelligence(graph_store=app_state.graph_store, llm_engine=app_state.llm_engine)
-        
-        manager = IngestionManager(
-            graph_store=app_state.graph_store,
-            vector_store=app_state.vector_store,
-            intelligence=intelligence,
-            embedder=app_state.embedder
-        )
-        
-        logger.info(f"⚙️ [Background] Processando: {file_path.name} no namespace '{namespace}'")
-        
-        # Processamos o arquivo específico
-        manager.process_file(str(file_path), namespace=namespace)
-        
-        logger.info(f"✅ [Background] Concluído: {file_path.name}")
-    except Exception as e:
-        logger.error(f"❌ [Background] Falha em {file_path.name}: {e}", exc_info=True)
-    finally:
-        ingestion_semaphore.release()
+async def _background_ingestion_task(file_path: Path, namespace: str, app_state: Any):
+    """Executa a ingestão industrial em segundo plano com controle de concorrência assíncrona."""
+    async with ingestion_semaphore:
+        try:
+            from alana_system.memory.intelligence import GraphIntelligence
+            intelligence = GraphIntelligence(
+                graph_store=app_state.graph_store, 
+                llm_engine=app_state.llm_engine,
+                embedder=app_state.embedder
+            )
+            
+            manager = IngestionManager(
+                graph_store=app_state.graph_store,
+                vector_store=app_state.vector_store,
+                intelligence=intelligence,
+                embedder=app_state.embedder
+            )
+            
+            logger.info(f"⚙️ [Background] Processando: {file_path.name} no namespace '{namespace}'")
+            if file_path.is_dir():
+                await manager.process_directory(str(file_path), namespace=namespace)
+            else:
+                await manager.process_file(str(file_path), namespace=namespace)
+            logger.info(f"✅ [Background] Concluído: {file_path.name}")
+        except Exception as e:
+            logger.error(f"❌ [Background] Falha em {file_path.name}: {e}", exc_info=True)
 
 @router.post("/upload")
 async def upload_document(
@@ -52,8 +56,9 @@ async def upload_document(
     namespace: str = Query("global", description="O projeto onde o arquivo sera guardado")
 ):
     """Recebe um arquivo e agenda o processamento industrial assíncrono."""
-    if not ingestion_semaphore.acquire(blocking=False):
-        raise HTTPException(status_code=503, detail="Servidor ocupado. Tente novamente em instantes.")
+    # Verificação preventiva: Se o semáforo estiver "cheio", avisamos o usuário.
+    if ingestion_semaphore.locked():
+        raise HTTPException(status_code=503, detail="Servidor ocupado processando outros arquivos. Tente novamente em instantes.")
 
     try:
         upload_dir = Path("data/uploads") / namespace
@@ -72,7 +77,6 @@ async def upload_document(
             "namespace": namespace
         }
     except Exception as e:
-        ingestion_semaphore.release()
         logger.error(f"❌ Erro no upload: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -83,12 +87,8 @@ async def process_local_path(
     background_tasks: BackgroundTasks
 ):
     """Processa uma pasta local ja existente no servidor."""
-    if not ingestion_semaphore.acquire(blocking=False):
-        raise HTTPException(status_code=503, detail="Servidor ocupado.")
-
     path = Path(request_data.path)
     if not path.exists():
-        ingestion_semaphore.release()
         raise HTTPException(status_code=404, detail="Caminho nao encontrado.")
 
     background_tasks.add_task(_background_ingestion_task, path, request_data.namespace, request.app.state)

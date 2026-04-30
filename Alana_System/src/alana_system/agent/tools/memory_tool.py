@@ -11,7 +11,7 @@ class MemoryTool(BaseTool):
     def __init__(self, query_engine: QueryEngine):
         self.query_engine = query_engine
         
-    def execute(self, query: str) -> str:
+    async def execute(self, query: str) -> str:
         """
         Consulta a memoria hibrida respeitando o isolamento de namespace.
         """
@@ -22,7 +22,7 @@ class MemoryTool(BaseTool):
             logger.info(f"🧠 Agente consultando memoria [{self.current_namespace}]: {query}")
             
             # Busca no motor de consulta usando o namespace injetado via BaseTool
-            results = self.query_engine.query(query, namespace=self.current_namespace)
+            results = await self.query_engine.query(query, namespace=self.current_namespace)
             
             context_text = results.get("context_text", "")
             if not context_text or "Nenhum contexto encontrado" in context_text:
